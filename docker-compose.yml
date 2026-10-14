@@ -1,0 +1,19 @@
+# Local PostgreSQL + pgvector for SurMore Assistant (free, runs on your machine).
+#   docker compose up -d      start it
+#   docker compose down       stop it (data is kept in the surmore-pgdata volume)
+services:
+  db:
+    image: pgvector/pgvector:pg17
+    container_name: surmore-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: surmore
+      POSTGRES_PASSWORD: surmore
+      POSTGRES_DB: surmore
+    ports:
+      - "5433:5432"   # 5433 on your machine, so it never clashes with another local Postgres
+    volumes:
+      - surmore-pgdata:/var/lib/postgresql/data
+
+volumes:
+  surmore-pgdata:

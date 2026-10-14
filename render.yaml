@@ -1,0 +1,41 @@
+# Render Blueprint: New > Blueprint in the Render dashboard, pick this repository.
+# Render asks for every value marked `sync: false` when the blueprint is created.
+services:
+  - type: web
+    name: surmore-assistant
+    runtime: docker
+    plan: free            # sleeps after 15 idle minutes; the first request after that takes ~1 minute
+    healthCheckPath: /api/health
+    autoDeploy: true
+    envVars:
+      - key: ENVIRONMENT
+        value: production
+      - key: AUTH_MODE
+        value: supabase
+      - key: DATABASE_URL          # Supabase > Connect > Session pooler connection string
+        sync: false
+      - key: SUPABASE_URL          # https://<project-ref>.supabase.co
+        sync: false
+      - key: SUPABASE_ANON_KEY     # Supabase > Project Settings > API Keys > anon / publishable key
+        sync: false
+      - key: AUTH_PROVIDERS
+        value: email,google
+      - key: NVIDIA_API_KEY
+        sync: false
+      - key: NVIDIA_LLM_MODEL
+        sync: false
+      - key: NVIDIA_EMBEDDING_MODEL
+        value: nvidia/llama-3.2-nv-embedqa-1b-v2
+      # Render's free disk is wiped on every deploy, so original files go to a bucket.
+      - key: STORAGE_BACKEND
+        value: s3
+      - key: S3_BUCKET
+        sync: false
+      - key: S3_ENDPOINT_URL       # Cloudflare R2: https://<account-id>.r2.cloudflarestorage.com
+        sync: false
+      - key: S3_ACCESS_KEY_ID
+        sync: false
+      - key: S3_SECRET_ACCESS_KEY
+        sync: false
+      - key: S3_REGION
+        value: auto

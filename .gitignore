@@ -1,0 +1,19 @@
+# Secrets
+.env
+!.env.example
+
+# Python
+backend/.venv/
+__pycache__/
+*.pyc
+
+# App data (database + uploaded files)
+backend/data/
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
+*.tsbuildinfo
+
+# Local test documents
+Document_testing/
