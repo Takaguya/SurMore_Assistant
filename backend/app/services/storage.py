@@ -18,7 +18,7 @@ from urllib.parse import quote
 
 from fastapi.responses import FileResponse, RedirectResponse, Response
 
-from .config import get_settings
+from ..core.config import get_settings
 
 COPY_CHUNK = 1024 * 1024
 LINK_SECONDS = 300

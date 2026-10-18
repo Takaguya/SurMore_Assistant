@@ -7,9 +7,10 @@ from fastapi import APIRouter, Depends, HTTPException, Response
 from fastapi.responses import StreamingResponse
 from psycopg.types.json import Jsonb
 
-from .. import db, limits, nvidia, rag
-from ..auth import User, current_user
-from ..config import get_settings
+from ..core import db, limits
+from ..core.auth import User, current_user
+from ..core.config import get_settings
+from ..services import nvidia, rag
 from ..schemas import (
     ChatRequest,
     Conversation,
@@ -86,7 +87,9 @@ def get_conversation(conversation_id: str, user: User = Depends(current_user)):
         rows = conn.execute(
             "SELECT * FROM messages WHERE conversation_id = %s ORDER BY created_at", (conversation_id,)
         ).fetchall()
-    return ConversationDetail(**conversation.model_dump(), messages=[_message(r) for r in rows])
+    messages = [_message(r) for r in rows]
+    rag.relink_sources([source for m in messages for source in m.sources])
+    return ConversationDetail(**conversation.model_dump(), messages=messages)
 
 
 @router.patch("/{conversation_id}", response_model=Conversation)

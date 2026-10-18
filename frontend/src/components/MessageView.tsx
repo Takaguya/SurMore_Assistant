@@ -4,6 +4,7 @@ import remarkGfm from "remark-gfm";
 import { api } from "../api";
 import { fileTypeLabel, splitThinking } from "../format";
 import type { Message, Source } from "../types";
+import { FigureStrip, type FigureItem } from "./Figures";
 import { OpenIcon, RetryIcon } from "./Icons";
 
 export interface UIMessage extends Message {
@@ -18,6 +19,29 @@ interface Props {
 }
 
 const CITATION = /\[(\d+(?:\s*[,;]\s*\d+)*)\](?!\()/g;
+
+// More than this under one answer is a wall of pictures; the rest are in each source.
+const MAX_ANSWER_FIGURES = 4;
+
+/** The sources' diagrams, each once, labelled with the source they belong to. */
+function figureItems(sources: Source[], onOpenSource: (source: Source) => void): FigureItem[] {
+  const seen = new Set<string>();
+  const items: FigureItem[] = [];
+  for (const source of sources) {
+    for (const figure of source.figures) {
+      if (seen.has(figure.id)) continue;
+      seen.add(figure.id);
+      items.push({
+        figure,
+        sourceN: source.n,
+        location: source.location ?? source.filename,
+        filename: source.filename,
+        onShowInDocument: source.section_id ? () => onOpenSource(source) : undefined,
+      });
+    }
+  }
+  return items;
+}
 
 /** Turn [1], [2, 3] into links the Markdown renderer hands to <Citation>. */
 function linkCitations(markdown: string, max: number): { text: string; cited: Set<number> } {
@@ -60,6 +84,7 @@ export const MessageView = memo(function MessageView({ message, onRetry, onOpenS
   const citedSources = message.sources.filter((s) => cited.has(s.n));
   const otherSources = message.sources.filter((s) => !cited.has(s.n));
   const busy = message.status !== undefined;
+  const answerFigures = busy ? [] : figureItems(citedSources, onOpenSource).slice(0, MAX_ANSWER_FIGURES);
 
   return (
     <div className="msg msg-assistant" aria-busy={busy}>
@@ -109,6 +134,8 @@ export const MessageView = memo(function MessageView({ message, onRetry, onOpenS
           </p>
         )
       )}
+
+      <FigureStrip items={answerFigures} label="Diagrams in the cited sources" caption="Diagrams in the cited sources" />
 
       {message.error && (
         <div className="msg-error" role="alert">
@@ -197,6 +224,7 @@ function SourceItem({
           <p className="source-passage">
             <mark>{source.content}</mark>
           </p>
+          <FigureStrip items={figureItems([source], onOpenSource)} label={`Diagrams in source ${source.n}`} />
           <span className="source-links">
           {source.section_id && (
             <button className="source-open-link link-plain" onClick={() => onOpenSource(source)}>

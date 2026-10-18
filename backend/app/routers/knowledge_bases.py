@@ -1,10 +1,10 @@
 import psycopg
 from fastapi import APIRouter, Depends, HTTPException, Response
 
-from .. import db, limits
-from ..auth import User, current_user
-from ..storage import get_storage
+from ..core import db, limits
+from ..core.auth import User, current_user
 from ..schemas import KnowledgeBase, KnowledgeBaseCreate, KnowledgeBaseUpdate
+from ..services.storage import get_storage
 
 router = APIRouter(prefix="/api/knowledge-bases", tags=["knowledge bases"])
 

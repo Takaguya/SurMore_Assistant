@@ -4,7 +4,7 @@ from typing import Literal
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-BACKEND_DIR = Path(__file__).resolve().parent.parent
+BACKEND_DIR = Path(__file__).resolve().parents[2]  # backend/app/core/config.py -> backend/
 
 
 class Settings(BaseSettings):
@@ -21,16 +21,21 @@ class Settings(BaseSettings):
     nvidia_api_key: str = ""
     nvidia_base_url: str = "https://integrate.api.nvidia.com/v1"
     nvidia_llm_model: str = ""
-    nvidia_embedding_model: str = "nvidia/llama-3.2-nv-embedqa-1b-v2"
+    nvidia_embedding_model: str = "nvidia/nemotron-3-embed-1b"
     nvidia_embedding_dimensions: int | None = None
     nvidia_embedding_send_input_type: bool = True
     nvidia_embedding_batch_size: int = 32
-    nvidia_ocr_model: str = "nvidia/nemotron-parse"
+    nvidia_ocr_model: str = "nvidia/nemotron-3.5-super-vl-120b-a12b"
+    # Re-orders the retrieved passages by how well they answer the question. Empty turns reranking off.
+    nvidia_rerank_model: str = "nvidia/llama-nemotron-rerank-vl-1b-v2"
 
     # auto: OCR only pages/slides with no readable text; always: OCR every PDF page; off: never
     ocr_mode: Literal["auto", "always", "off"] = "auto"
     ocr_concurrency: int = 4
     ocr_min_text_chars: int = 40
+
+    # Save the diagrams and pictures in PDFs, slides, Word files and images, to show them with answers.
+    extract_figures: bool = True
 
     llm_temperature: float = 0.2
     llm_top_p: float = 0.7
@@ -39,6 +44,8 @@ class Settings(BaseSettings):
     chunk_size: int = 1200
     chunk_overlap: int = 200
     retrieval_top_k: int = 6
+    # Passages fetched by meaning (and half as many by keyword) for the reranker to choose the best from.
+    rerank_candidates: int = 30
     max_history_messages: int = 8
 
     max_upload_mb: int = 200

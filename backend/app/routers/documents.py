@@ -5,12 +5,14 @@ from typing import Literal
 import psycopg
 from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Response, UploadFile
 
-from .. import db, ingestion, limits, nvidia
-from ..auth import User, current_user
-from ..config import get_settings
-from ..converters import ExtractionError, detect_file_type
-from ..storage import FileMissing, FileTooLarge, get_storage
-from ..schemas import Document, RejectedFile, Section, SectionUpdate, UploadResult
+from ..core import db, limits
+from ..core.auth import User, current_user
+from ..core.config import get_settings
+from ..schemas import Document, Figure, RejectedFile, Section, SectionUpdate, UploadResult
+from ..services import ingestion, nvidia
+from ..services.converters import ExtractionError, detect_file_type
+from ..services.rag import figures_by_section
+from ..services.storage import FileMissing, FileTooLarge, get_storage
 from .knowledge_bases import get_kb_or_404
 
 router = APIRouter(prefix="/api", tags=["documents"])
@@ -145,8 +147,10 @@ def reprocess_document(
 def delete_document(document_id: str, user: User = Depends(current_user)):
     with db.connect() as conn:
         row = _get_doc_or_404(conn, document_id, user)
-        conn.execute("DELETE FROM documents WHERE id = %s", (document_id,))  # cascades to sections and chunks
-    get_storage().delete(row["stored_path"])
+        conn.execute("DELETE FROM documents WHERE id = %s", (document_id,))  # cascades to sections, chunks, figures
+    storage = get_storage()
+    storage.delete(row["stored_path"])
+    storage.delete_prefix(f"{row['kb_id']}/figures/{document_id}")
     return Response(status_code=204)
 
 
@@ -161,12 +165,30 @@ def get_document_file(document_id: str, user: User = Depends(current_user)):
         raise HTTPException(404, "The original file is missing from storage") from None
 
 
+@router.get("/figures/{figure_id}")
+def get_figure(figure_id: str, user: User = Depends(current_user)):
+    """A diagram or picture cut out of a document (WebP)."""
+    with db.connect() as conn:
+        row = conn.execute(
+            f"SELECT f.stored_path FROM figures f JOIN documents d ON d.id = f.document_id WHERE f.id = %s AND {_OWNED}",
+            (figure_id, user.id),
+        ).fetchone()
+    if row is None:
+        raise HTTPException(404, "Figure not found")
+    try:
+        response = get_storage().response(row["stored_path"], f"figure-{figure_id}.webp", "image/webp")
+    except FileMissing:
+        raise HTTPException(404, "The figure is missing from storage") from None
+    response.headers["Cache-Control"] = "private, max-age=300"  # as long as an S3 download link lasts
+    return response
+
+
 # --------------------------------------------------------------------------- sections (the editable Markdown)
 
 
-def _section_model(row: dict, file_type: str) -> Section:
+def _section_model(row: dict, file_type: str, figures: list[Figure]) -> Section:
     can_ocr = file_type == "image" or (file_type == "pdf" and row["page"] is not None)
-    return Section(**{k: row[k] for k in Section.model_fields if k in row}, can_ocr=can_ocr)
+    return Section(**{k: row[k] for k in Section.model_fields if k in row}, can_ocr=can_ocr, figures=figures)
 
 
 def _get_section(conn: psycopg.Connection, section_id: str, user: User) -> tuple[dict, dict]:
@@ -184,7 +206,8 @@ def list_sections(document_id: str, user: User = Depends(current_user)):
     with db.connect() as conn:
         document = _get_doc_or_404(conn, document_id, user)
         rows = conn.execute("SELECT * FROM sections WHERE document_id = %s ORDER BY idx", (document_id,)).fetchall()
-    return [_section_model(r, document["file_type"]) for r in rows]
+    figures = figures_by_section([r["id"] for r in rows])
+    return [_section_model(r, document["file_type"], figures.get(r["id"], [])) for r in rows]
 
 
 def _edit_section(section_id: str, user: User, action) -> Section:
@@ -200,7 +223,7 @@ def _edit_section(section_id: str, user: User, action) -> Section:
         raise HTTPException(502, nvidia.describe_api_error(exc)) from exc
     with db.connect() as conn:
         section, document = _get_section(conn, section_id, user)
-    return _section_model(section, document["file_type"])
+    return _section_model(section, document["file_type"], figures_by_section([section_id]).get(section_id, []))
 
 
 @router.put("/sections/{section_id}", response_model=Section)

@@ -7,13 +7,18 @@ Pages and slides without readable text go through OCR (see ocr.py), depending on
 import csv
 import datetime as dt
 import io
+import itertools
+import logging
 import re
+from collections import Counter
 from collections.abc import Callable, Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
+from ..core.config import get_settings
 from . import nvidia, ocr
-from .config import get_settings
+
+logger = logging.getLogger(__name__)
 
 FILE_TYPES = {
     ".pdf": "pdf",
@@ -40,11 +45,32 @@ LEGACY_FORMATS = {".doc": ".docx", ".ppt": ".pptx", ".xls": ".xlsx"}
 # Sections longer than this are split so they stay comfortable to read and edit.
 MAX_SECTION_CHARS = 6000
 
+# A picture counts as a figure (diagram, chart, illustration) when it's at least this share of the page's
+# width and height, but smaller than this share of its area (bigger is a scanned page or a background).
+FIGURE_MIN_WIDTH = 0.25
+FIGURE_MIN_HEIGHT = 0.12
+FIGURE_MAX_AREA = 0.85
+FIGURES_PER_SECTION = 6
+FIGURE_MAX_PX = 1600
+
+# Running headers and footers sit in the first or last few lines of a page.
+EDGE_LINES = 3
+PAGE_NUMBER = re.compile(r"^(page\s*)?[-–—]?\s*\d{1,4}\s*[-–—]?(\s*(of|/)\s*\d{1,4})?$", re.IGNORECASE)
+
 Progress = Callable[[str], None]
 
 
 class ExtractionError(Exception):
     """A problem with the file that the user can fix (wrong format, no text, password...)."""
+
+
+@dataclass
+class Figure:
+    """A diagram or picture cut out of the document, as WebP."""
+
+    data: bytes
+    width: int
+    height: int
 
 
 @dataclass
@@ -54,6 +80,7 @@ class Section:
     page: int | None = None
     origin: str = "text"  # text | ocr
     notice: str | None = None
+    figures: list[Figure] = field(default_factory=list)
 
 
 def detect_file_type(filename: str) -> str:
@@ -80,11 +107,9 @@ def convert(path: Path, file_type: str, progress: Progress) -> list[Section]:
         "md": lambda: _split_long(_markdown_sections(_read_text(path))),
         "image": lambda: _convert_image(path, progress),
     }[file_type]
-    sections = [
-        Section(_clean(s.markdown), s.location, s.page, s.origin, s.notice) for s in converter()
-    ]
+    sections = [replace(s, markdown=_clean(s.markdown)) for s in converter()]
     # PDF pages are kept even when empty so page numbers line up and the page can be OCR'd later.
-    return [s for s in sections if s.markdown or s.page is not None]
+    return [s for s in sections if s.markdown or s.page is not None or s.figures]
 
 
 def ocr_failure_notice(exc: Exception) -> str:
@@ -126,6 +151,10 @@ def _convert_pdf(path: Path, progress: Progress) -> list[Section]:
     except PdfReadError as exc:
         raise ExtractionError(f"Couldn't read this PDF: {exc}") from exc
 
+    # Site names, book titles and page numbers on every page only add noise to search.
+    boilerplate = _repeated_lines(texts)
+    texts = [_strip_boilerplate(text, boilerplate) for text in texts]
+
     if settings.ocr_mode == "off":
         to_ocr: list[int] = []
     else:
@@ -140,19 +169,26 @@ def _convert_pdf(path: Path, progress: Progress) -> list[Section]:
         else {}
     )
 
+    figures = _pdf_figures(path, progress) if settings.extract_figures else {}
+
     sections = []
     for number, text in enumerate(texts, start=1):
         result = results.get(number)
+        if isinstance(result, str):
+            result = _strip_boilerplate(result, boilerplate)
         location = f"Page {number}"
+        page_figures = figures.get(number, [])
         if isinstance(result, str) and result.strip():
-            sections.append(Section(result, location, page=number, origin="ocr"))
+            sections.append(Section(result, location, page=number, origin="ocr", figures=page_figures))
             continue
         notice = None
         if isinstance(result, Exception):
             notice = ocr_failure_notice(result) + (" Showing the text stored in the PDF instead." if text.strip() else "")
         elif result == "" and not text.strip():
             notice = "OCR found no text on this page."
-        sections.append(Section(_pdf_text_to_markdown(text), location, page=number, notice=notice))
+        sections.append(
+            Section(_pdf_text_to_markdown(text), location, page=number, notice=notice, figures=page_figures)
+        )
 
     if not any(s.markdown.strip() for s in sections):
         if settings.ocr_mode == "off":
@@ -196,6 +232,138 @@ def _pdf_text_to_markdown(text: str) -> str:
     return "\n\n".join(paragraphs)
 
 
+def _line_key(line: str) -> str:
+    """A line without Markdown markers, case or extra spaces, so OCR output matches the PDF's own text."""
+    return " ".join(re.sub(r"^[#>*\-\s]+|[*_`]", "", line).split()).casefold()
+
+
+def _edge_indexes(lines: list[str]) -> set[int]:
+    filled = [i for i, line in enumerate(lines) if line.strip()]
+    return set(filled[:EDGE_LINES] + filled[-EDGE_LINES:])
+
+
+def _repeated_lines(texts: list[str]) -> set[str]:
+    """Lines at the top or bottom of most pages: running headers and footers like a site name or book title."""
+    if len(texts) < 4:
+        return set()
+    counts: Counter[str] = Counter()
+    for text in texts:
+        lines = text.splitlines()
+        counts.update({_line_key(lines[i]) for i in _edge_indexes(lines)} - {""})
+    threshold = max(3, len(texts) * 0.4)
+    return {key for key, count in counts.items() if count >= threshold}
+
+
+def _strip_boilerplate(text: str, boilerplate: set[str]) -> str:
+    """Remove running headers, footers and page numbers from the top and bottom of a page."""
+    lines = text.splitlines()
+    drop = {
+        i for i in _edge_indexes(lines)
+        if _line_key(lines[i]) in boilerplate or PAGE_NUMBER.match(_line_key(lines[i]))
+    }
+    return "\n".join(line for i, line in enumerate(lines) if i not in drop)
+
+
+def _pdf_figures(path: Path, progress: Progress) -> dict[int, list[Figure]]:
+    """Diagrams and pictures on each page (page number -> figures, top to bottom).
+
+    They're cut out of the rendered page rather than extracted raw, so they look exactly as in the PDF.
+    Diagrams drawn as vector shapes instead of embedded images aren't found.
+    """
+    import pypdfium2 as pdfium
+    import pypdfium2.raw as pdfium_c
+
+    figures: dict[int, list[Figure]] = {}
+    try:
+        pdf = pdfium.PdfDocument(str(path))
+    except Exception as exc:
+        logger.warning("Couldn't open %s to save its figures: %s", path.name, exc)
+        return figures
+    try:
+        total = len(pdf)
+        for number in range(1, total + 1):
+            if number % 20 == 0:
+                progress(f"Saving diagrams: page {number} of {total}")
+            try:
+                page = pdf[number - 1]
+                width, height = page.get_size()
+                boxes = []
+                for obj in page.get_objects(filter=[pdfium_c.FPDF_PAGEOBJ_IMAGE], max_depth=3):
+                    left, bottom, right, top = obj.get_bounds()
+                    left, bottom, right, top = max(left, 0), max(bottom, 0), min(right, width), min(top, height)
+                    if (right - left) * (top - bottom) >= width * height * 0.01:  # skip icons and bullets
+                        boxes.append((left, bottom, right, top))
+                kept = [b for b in _merge_boxes(boxes) if _is_figure(b[2] - b[0], b[3] - b[1], width, height)]
+                kept.sort(key=lambda b: -b[3])  # PDF y grows upwards: highest first
+                for left, bottom, right, top in kept[:FIGURES_PER_SECTION]:
+                    scale = min(3.0, FIGURE_MAX_PX / max(right - left, top - bottom))
+                    image = page.render(scale=scale, crop=(left, bottom, width - right, height - top)).to_pil()
+                    figures.setdefault(number, []).append(_encode_figure(image))
+            except Exception as exc:  # one odd page shouldn't lose the document's other figures
+                logger.warning("Couldn't save the figures on page %d of %s: %s", number, path.name, exc)
+    finally:
+        pdf.close()
+    return figures
+
+
+def _merge_boxes(boxes: list[tuple[float, ...]], gap: float = 4.0) -> list[tuple[float, ...]]:
+    """Join overlapping or touching boxes, so a diagram built from several images becomes one figure."""
+    merged = list(boxes)
+    joined = True
+    while joined:
+        joined = False
+        for i, j in itertools.combinations(range(len(merged)), 2):
+            a, b = merged[i], merged[j]
+            if a[0] - gap <= b[2] and b[0] - gap <= a[2] and a[1] - gap <= b[3] and b[1] - gap <= a[3]:
+                merged[i] = (min(a[0], b[0]), min(a[1], b[1]), max(a[2], b[2]), max(a[3], b[3]))
+                del merged[j]
+                joined = True
+                break
+    return merged
+
+
+def _is_figure(width: float, height: float, page_width: float, page_height: float) -> bool:
+    return (
+        width >= page_width * FIGURE_MIN_WIDTH
+        and height >= page_height * FIGURE_MIN_HEIGHT
+        and width * height < page_width * page_height * FIGURE_MAX_AREA
+    )
+
+
+# --------------------------------------------------------------------------- Figures
+
+
+def _encode_figure(image) -> Figure:
+    """WebP on a white background (transparent diagrams are unreadable in dark mode), at most 1600 px."""
+    from PIL import Image
+
+    if image.mode in ("RGBA", "LA", "P"):
+        image = image.convert("RGBA")
+        background = Image.new("RGB", image.size, "white")
+        background.paste(image, mask=image.getchannel("A"))
+        image = background
+    else:
+        image = image.convert("RGB")
+    image.thumbnail((FIGURE_MAX_PX, FIGURE_MAX_PX))
+    buffer = io.BytesIO()
+    image.save(buffer, format="WEBP", quality=80, method=4)
+    return Figure(buffer.getvalue(), image.width, image.height)
+
+
+def _figure_from_bytes(data: bytes, min_px: int = 150) -> Figure | None:
+    """A figure from an embedded picture, or None for icons, logos and formats Pillow can't read (EMF/WMF)."""
+    from PIL import Image
+
+    try:
+        with Image.open(io.BytesIO(data)) as image:
+            image.load()
+            if min(image.size) < min_px:
+                return None
+            return _encode_figure(image)
+    except Exception:
+        return None
+
+
 # --------------------------------------------------------------------------- Images
 
 
@@ -213,7 +381,8 @@ def _convert_image(path: Path, progress: Progress) -> list[Section]:
     markdown = ocr.image_to_markdown(image)
     if not markdown.strip():
         raise ExtractionError("OCR found no text in this image.")
-    return [Section(markdown, None, origin="ocr")]
+    figures = [_encode_figure(image)] if get_settings().extract_figures else []
+    return [Section(markdown, None, origin="ocr", figures=figures)]
 
 
 # --------------------------------------------------------------------------- Word
@@ -224,21 +393,29 @@ def _convert_docx(path: Path) -> list[Section]:
     from docx.table import Table
     from docx.text.paragraph import Paragraph
 
+    extract_figures = get_settings().extract_figures
     document = docx.Document(str(path))
     sections: list[Section] = []
     heading: str | None = None
     blocks: list[str] = []
+    figures: list[Figure] = []  # pictures since the last section; they go with the next section that has text
+    seen_pictures: set[str] = set()
 
     def flush() -> None:
         if blocks:
-            sections.append(Section(_join_blocks(blocks), heading))
+            sections.append(Section(_join_blocks(blocks), heading, figures=figures[:FIGURES_PER_SECTION]))
             blocks.clear()
+            figures.clear()
 
     for block in document.iter_inner_content():
         if isinstance(block, Table):
             blocks.append(_markdown_table([[cell.text for cell in row.cells] for row in block.rows]))
             continue
-        if not isinstance(block, Paragraph) or not block.text.strip():
+        if not isinstance(block, Paragraph):
+            continue
+        if extract_figures:
+            figures.extend(_docx_figures(document, block, seen_pictures))
+        if not block.text.strip():
             continue
         style = (block.style.name if block.style is not None else "") or ""
         level = _heading_level(style)
@@ -249,7 +426,22 @@ def _convert_docx(path: Path) -> list[Section]:
         else:
             blocks.append(_list_prefix(block, style) + _runs_markdown(block))
     flush()
+    if figures and sections:  # pictures after the last paragraph of text
+        sections[-1].figures.extend(figures[: FIGURES_PER_SECTION - len(sections[-1].figures)])
     return sections
+
+
+def _docx_figures(document, paragraph, seen: set[str]) -> list[Figure]:
+    """Pictures in a Word paragraph. Native Word charts and shapes aren't pictures, so they're not included."""
+    figures = []
+    for rel_id in paragraph._p.xpath(".//a:blip/@r:embed"):
+        part = document.part.related_parts.get(rel_id)
+        if part is None or str(part.partname) in seen:
+            continue
+        seen.add(str(part.partname))
+        if figure := _figure_from_bytes(part.blob):
+            figures.append(figure)
+    return figures
 
 
 def _heading_level(style: str) -> int:
@@ -326,24 +518,30 @@ def _convert_pptx(path: Path, progress: Progress) -> list[Section]:
 
     settings = get_settings()
     presentation = Presentation(str(path))
+    slide_area = (presentation.slide_width or 12192000) * (presentation.slide_height or 6858000)
     sections = []
     total = len(presentation.slides)
     for number, slide in enumerate(presentation.slides, start=1):
         title_shape = slide.shapes.title
         title = title_shape.text.strip() if title_shape is not None and title_shape.has_text_frame else ""
         lines = [f"## {title}"] if title else []
-        pictures: list = []
+        pictures: list[tuple[bytes, int]] = []  # (image bytes, area on the slide)
         for shape in slide.shapes:
             if title_shape is not None and shape.shape_id == title_shape.shape_id:
                 continue
             lines.extend(_shape_markdown(shape, pictures))
+
+        figures: list[Figure] = []
+        if settings.extract_figures:
+            big = [blob for blob, area in pictures if area >= slide_area * 0.08]  # not logos and icons
+            figures = [f for f in map(_figure_from_bytes, big) if f][:FIGURES_PER_SECTION]
 
         origin, notice = "text", None
         body = "\n".join(lines)
         # Slides that are mostly a screenshot or scanned image: read the picture text with OCR.
         if settings.ocr_mode != "off" and pictures and _visible_chars(body) < settings.ocr_min_text_chars:
             progress(f"Running OCR on slide {number} of {total}")
-            for blob in sorted(pictures, key=len, reverse=True)[:3]:
+            for blob, _ in sorted(pictures, key=lambda p: len(p[0]), reverse=True)[:3]:
                 try:
                     from PIL import Image
 
@@ -363,7 +561,9 @@ def _convert_pptx(path: Path, progress: Progress) -> list[Section]:
                 lines.append("\n> **Speaker notes:** " + notes.replace("\n", "\n> "))
 
         location = f"Slide {number}" + (f": {title[:60]}" if title else "")
-        sections.append(Section(_join_blocks(lines) if lines else "", location, origin=origin, notice=notice))
+        sections.append(
+            Section(_join_blocks(lines) if lines else "", location, origin=origin, notice=notice, figures=figures)
+        )
     return sections
 
 
@@ -381,7 +581,7 @@ def _shape_markdown(shape, pictures: list) -> list[str]:
             if p.text.strip()
         ]
     try:
-        pictures.append(shape.image.blob)
+        pictures.append((shape.image.blob, (shape.width or 0) * (shape.height or 0)))
     except (AttributeError, ValueError):
         pass
     return []
@@ -518,7 +718,7 @@ def _split_long(sections: list[Section], part_label: str | None = None) -> list[
                 location = f"{part_label} {i}"
             else:
                 location = f"{section.location or 'Part'} ({i}/{len(parts)})"
-            out.append(Section(part, location, section.page, section.origin, section.notice))
+            out.append(replace(section, markdown=part, location=location, figures=section.figures if i == 1 else []))
     return out
 
 

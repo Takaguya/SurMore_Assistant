@@ -72,6 +72,20 @@ CREATE TABLE IF NOT EXISTS chunks (
 CREATE INDEX IF NOT EXISTS idx_chunks_kb ON chunks(kb_id);
 CREATE INDEX IF NOT EXISTS idx_chunks_document ON chunks(document_id);
 CREATE INDEX IF NOT EXISTS idx_chunks_section ON chunks(section_id);
+-- Keyword search (see _search in services/rag.py) alongside search by meaning.
+CREATE INDEX IF NOT EXISTS idx_chunks_keywords ON chunks USING gin (to_tsvector('english', content));
+
+-- Diagrams and pictures cut out of a section, shown next to answers that cite it.
+CREATE TABLE IF NOT EXISTS figures (
+    id          TEXT PRIMARY KEY,
+    document_id TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+    section_id  TEXT NOT NULL REFERENCES sections(id) ON DELETE CASCADE,
+    idx         INTEGER NOT NULL,
+    stored_path TEXT NOT NULL,                -- in file storage, under <kb_id>/figures/<document_id>/
+    width       INTEGER NOT NULL,
+    height      INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_figures_section ON figures(section_id, idx);
 
 CREATE TABLE IF NOT EXISTS conversations (
     id         TEXT PRIMARY KEY,

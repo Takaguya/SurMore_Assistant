@@ -1,7 +1,11 @@
-"""OCR with NVIDIA Nemotron Parse: page images in, Markdown out.
+"""OCR through NVIDIA's API: page images in, Markdown out.
 
-The hosted model is called through the OpenAI-compatible chat endpoint with the `markdown_bbox` tool.
-It answers with a tool call whose arguments are JSON: [[{"type", "text", "bbox"}, ...]] in reading order.
+Two kinds of model work as NVIDIA_OCR_MODEL:
+- Vision-language models (e.g. nvidia/nemotron-3.5-super-vl-120b-a12b) get the page with instructions to
+  transcribe it as Markdown and describe its diagrams. They read slides, infographics and diagrams well.
+- Nemotron Parse (nvidia/nemotron-parse) is called with the `markdown_bbox` tool and answers with a tool call
+  whose arguments are JSON: [[{"type", "text", "bbox"}, ...]] in reading order. It suits plain text pages,
+  but invents words on diagrams and stylised text.
 """
 
 import base64
@@ -16,8 +20,8 @@ from pathlib import Path
 import openai
 from PIL import Image
 
+from ..core.config import get_settings
 from . import nvidia
-from .config import get_settings
 
 logger = logging.getLogger(__name__)
 
@@ -123,11 +127,72 @@ def _data_uri(image: Image.Image, max_side: int) -> str:
         ratio = target / longest
         img = img.resize((round(img.width * ratio), round(img.height * ratio)), Image.Resampling.LANCZOS)
     buffer = io.BytesIO()
-    img.save(buffer, format="JPEG", quality=85)
+    img.save(buffer, format="JPEG", quality=90)
     return "data:image/jpeg;base64," + base64.b64encode(buffer.getvalue()).decode("ascii")
 
 
+VISION_SYSTEM_PROMPT = (
+    "You turn images of document pages into Markdown for a search index. "
+    "You copy text exactly and never invent words."
+)
+
+# The example matters: without it, models tend to skip the "Figure:" descriptions.
+VISION_PROMPT = """Convert this page image to Markdown.
+
+1. Transcribe all text exactly as written, in reading order: headings, paragraphs, lists, tables (as Markdown tables) and code (in fenced code blocks). Skip anything you cannot read.
+2. After the labels of each diagram, chart or infographic, add one line that starts with "Figure:" and says in 1-3 sentences what the diagram shows. Do this only for real diagrams, charts and infographics, not for titles, logos or decorative pictures.
+3. Do not include the page number or the header and footer text that repeats on every page.
+4. If the page has no text, output nothing.
+
+Example for a diagram:
+
+## 2) Router Pattern
+- User
+- Query
+- Router LLM
+- Path 1
+- Path 2
+- LLM response
+
+Figure: A router LLM reads the user's query and sends it down one of two paths, each handled by its own LLM, which returns the response.
+
+Output only the Markdown."""
+
+THINK_BLOCK = re.compile(r"<think>.*?</think>", re.DOTALL)
+WRAPPING_FENCE = re.compile(r"^```(?:markdown|md)?\s*\n(.*)\n```$", re.DOTALL)
+
+
 def _request(data_uri: str) -> str:
+    if "nemotron-parse" in get_settings().nvidia_ocr_model:
+        return _request_parse(data_uri)
+    return _request_vision(data_uri)
+
+
+def _request_vision(data_uri: str) -> str:
+    model = get_settings().nvidia_ocr_model
+    response = nvidia.sync_client().chat.completions.create(
+        model=model,
+        messages=[
+            {"role": "system", "content": VISION_SYSTEM_PROMPT},
+            {"role": "user", "content": [
+                {"type": "text", "text": VISION_PROMPT},
+                {"type": "image_url", "image_url": {"url": data_uri}},
+            ]},
+        ],
+        temperature=0,
+        max_tokens=8192,
+        # Nemotron models reason first by default: ~20x slower for OCR, with no gain in accuracy.
+        extra_body={"chat_template_kwargs": {"enable_thinking": False}} if "nemotron" in model else None,
+    )
+    choice = response.choices[0]
+    if choice.finish_reason == "length":
+        raise OcrError("the page has more text than the OCR model can return in one go")
+    text = THINK_BLOCK.sub("", choice.message.content or "").strip()
+    fenced = WRAPPING_FENCE.match(text)
+    return fenced.group(1).strip() if fenced else text
+
+
+def _request_parse(data_uri: str) -> str:
     settings = get_settings()
     response = nvidia.sync_client().chat.completions.create(
         model=settings.nvidia_ocr_model,

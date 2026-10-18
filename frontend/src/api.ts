@@ -82,6 +82,9 @@ export const api = {
     return `${BASE}/api/documents/${id}/file${page ? `#page=${page}` : ""}`;
   },
 
+  /** Plain URL for <img src>; sign-in rides along in a cookie, which the API accepts for GET requests. */
+  figureUrl: (id: string) => `${BASE}/api/figures/${id}`,
+
   listSections: (documentId: string) => request<Section[]>(`/api/documents/${documentId}/sections`),
   updateSection: (id: string, markdown: string) => request<Section>(`/api/sections/${id}`, json("PUT", { markdown })),
   ocrSection: (id: string) => request<Section>(`/api/sections/${id}/ocr`, { method: "POST" }),

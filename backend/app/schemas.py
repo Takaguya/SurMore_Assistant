@@ -54,6 +54,14 @@ class UploadResult(BaseModel):
     rejected: list[RejectedFile]
 
 
+class Figure(BaseModel):
+    """A diagram or picture from a section; the image is at /api/figures/{id}."""
+
+    id: str
+    width: int
+    height: int
+
+
 class Section(BaseModel):
     id: str
     document_id: str
@@ -65,6 +73,7 @@ class Section(BaseModel):
     edited: bool
     notice: str | None
     can_ocr: bool
+    figures: list[Figure] = []
     updated_at: datetime
 
 
@@ -83,6 +92,7 @@ class Source(BaseModel):
     location: str | None
     content: str
     score: float
+    figures: list[Figure] = []  # diagrams in the passage's section (empty in answers saved before figures existed)
 
 
 class Message(BaseModel):

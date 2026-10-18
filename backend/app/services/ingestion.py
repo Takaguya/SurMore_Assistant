@@ -3,13 +3,15 @@
 Also re-indexes a single section after the user edits it or re-runs OCR on it.
 """
 
+import io
 import logging
 
 from pgvector import HalfVector
 
-from . import db, nvidia, ocr
-from .chunking import split_text
-from .config import get_settings
+from ..core import db
+from ..core.config import get_settings
+from . import nvidia, ocr
+from .chunking import is_table_of_contents, split_text
 from .converters import ExtractionError, Section, convert
 from .storage import FileMissing, get_storage
 
@@ -25,7 +27,9 @@ def _set_progress(document_id: str, message: str) -> None:
 
 
 def _chunk_rows(document: dict, section: dict) -> list[tuple[str, str | None]]:
-    """(chunk text, location) pairs for one section."""
+    """(chunk text, location) pairs for one section. Tables of contents aren't indexed."""
+    if is_table_of_contents(section["markdown"]):
+        return []
     s = get_settings()
     return [(piece, section["location"]) for piece in split_text(section["markdown"], s.chunk_size, s.chunk_overlap)]
 
@@ -50,18 +54,39 @@ def _insert_chunks(conn, document: dict, rows: list[tuple[str, str, str | None]]
         )
 
 
-def _save_sections(document_id: str, sections: list[Section]) -> None:
+def _save_sections(document: dict, sections: list[Section], progress) -> None:
+    """Replace the document's sections, and its figures in file storage."""
+    storage = get_storage()
+    prefix = f"{document['kb_id']}/figures/{document['id']}"
+    storage.delete_prefix(prefix)  # figures from an earlier read of the file
+
+    section_rows, figure_rows = [], []
+    total_figures = sum(len(s.figures) for s in sections)
+    for i, s in enumerate(sections):
+        section_id = db.new_id()
+        section_rows.append((section_id, document["id"], i, s.location, s.page, s.markdown, s.origin, s.notice))
+        for k, figure in enumerate(s.figures):
+            figure_id = db.new_id()
+            stored_path = f"{prefix}/{figure_id}.webp"
+            storage.save(stored_path, io.BytesIO(figure.data), len(figure.data))
+            figure_rows.append((figure_id, document["id"], section_id, k, stored_path, figure.width, figure.height))
+            if len(figure_rows) % 50 == 0:
+                progress(f"Saving diagrams: {len(figure_rows)} of {total_figures}")
+
     with db.connect() as conn:
-        conn.execute("DELETE FROM sections WHERE document_id = %s", (document_id,))  # cascades to chunks
+        conn.execute("DELETE FROM sections WHERE document_id = %s", (document["id"],))  # cascades to chunks, figures
         with conn.cursor() as cur:
             cur.executemany(
                 """INSERT INTO sections (id, document_id, idx, location, page, markdown, origin, notice)
                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)""",
-                [
-                    (db.new_id(), document_id, i, s.location, s.page, s.markdown, s.origin, s.notice)
-                    for i, s in enumerate(sections)
-                ],
+                section_rows,
             )
+            if figure_rows:
+                cur.executemany(
+                    """INSERT INTO figures (id, document_id, section_id, idx, stored_path, width, height)
+                       VALUES (%s, %s, %s, %s, %s, %s, %s)""",
+                    figure_rows,
+                )
 
 
 def process_document(document_id: str, mode: str = "extract") -> None:
@@ -82,7 +107,7 @@ def process_document(document_id: str, mode: str = "extract") -> None:
                 raise ExtractionError(MISSING_FILE) from None
             if not any(s.markdown for s in sections):
                 raise ExtractionError("No readable text found in this file.")
-            _save_sections(document_id, sections)
+            _save_sections(document, sections, progress)
 
         with db.connect() as conn:
             sections_rows = conn.execute(

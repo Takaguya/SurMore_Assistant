@@ -4,6 +4,7 @@ import remarkGfm from "remark-gfm";
 import { api } from "../api";
 import { countSections, fileTypeLabel } from "../format";
 import type { DocumentInfo, KnowledgeBase, Section } from "../types";
+import { FigureStrip } from "./Figures";
 import { ChevronLeftIcon, OpenIcon, RetryIcon } from "./Icons";
 
 interface Props {
@@ -264,6 +265,12 @@ function SectionBlock({ section, fileType, editing, runningOcr, error, targeted,
           </div>
         ) : (
           <p className="muted section-empty">No text on this {noun}.</p>
+        )}
+        {!editing && (
+          <FigureStrip
+            items={section.figures.map((figure) => ({ figure, location: label }))}
+            label={`Diagrams on ${label}`}
+          />
         )}
       </div>
     </article>

@@ -27,6 +27,13 @@ export interface DocumentInfo {
   created_at: string;
 }
 
+/** A diagram or picture cut out of a document; the image is at api.figureUrl(id). */
+export interface Figure {
+  id: string;
+  width: number;
+  height: number;
+}
+
 export interface Section {
   id: string;
   document_id: string;
@@ -38,6 +45,7 @@ export interface Section {
   edited: boolean;
   notice: string | null;
   can_ocr: boolean;
+  figures: Figure[];
   updated_at: string;
 }
 
@@ -62,6 +70,7 @@ export interface Source {
   location: string | null;
   content: string;
   score: number;
+  figures: Figure[];
 }
 
 export interface Message {

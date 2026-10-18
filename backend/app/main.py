@@ -8,9 +8,9 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from starlette.datastructures import MutableHeaders
 
-from . import db
-from .auth import User, current_user
-from .config import get_settings
+from .core import db
+from .core.auth import User, current_user
+from .core.config import get_settings
 from .routers import chat, documents, knowledge_bases
 from .schemas import Health
 

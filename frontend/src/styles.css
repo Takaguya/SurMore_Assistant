@@ -1081,6 +1081,134 @@ button.cite:hover {
   }
 }
 
+/* ------------------------------------------------------------------ figures */
+
+.figures {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  margin: 0.9rem 0 0.4rem;
+}
+
+.figures-caption {
+  font-size: var(--fs-xs);
+  color: var(--ink-faint);
+}
+
+.figure-strip {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+}
+
+.figure-thumb {
+  position: relative;
+  display: block;
+  padding: 0;
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-s);
+  /* Figures are saved on white, so they stay readable in dark mode too. */
+  background: #fff;
+  overflow: hidden;
+  cursor: zoom-in;
+}
+
+.figure-thumb:hover {
+  border-color: var(--ink-faint);
+}
+
+.figure-thumb img {
+  display: block;
+  height: 8.5rem;
+  width: auto;
+  max-width: 15rem;
+  object-fit: contain;
+}
+
+/* Same marker tag as a cited source's number, so the link between the two is obvious. */
+.figure-n {
+  position: absolute;
+  top: 0.35rem;
+  left: 0.35rem;
+  min-width: 1.6em;
+  padding: 0 0.35em;
+  border-radius: 3px 6px 4px 7px;
+  background: var(--marker);
+  color: var(--marker-ink);
+  font-size: var(--fs-xs);
+  font-weight: 800;
+  text-align: center;
+}
+
+.figure-viewer {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  max-width: min(72rem, calc(100vw - 2rem));
+  max-height: calc(100dvh - 2rem);
+  overflow: visible;
+}
+
+.figure-viewer::backdrop {
+  background: rgba(20, 24, 50, 0.72);
+}
+
+.figure-viewer-inner {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  padding: 1rem;
+  border-radius: var(--radius-m);
+  background: var(--paper);
+  color: var(--ink);
+  box-shadow: 0 24px 60px rgba(20, 24, 50, 0.3);
+}
+
+.figure-viewer img {
+  display: block;
+  width: auto;
+  height: auto;
+  max-width: 100%;
+  max-height: calc(100dvh - 9.5rem);
+  margin: 0 auto;
+  border-radius: var(--radius-s);
+  background: #fff;
+}
+
+.figure-viewer-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.figure-viewer-where {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 14rem;
+  min-width: 0;
+  font-size: var(--fs-s);
+  color: var(--ink-muted);
+}
+
+.figure-viewer-file {
+  font-weight: 700;
+  color: var(--ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@media (max-width: 860px) {
+  .figure-thumb img {
+    height: 6.5rem;
+    max-width: 11rem;
+  }
+}
+
 /* ------------------------------------------------------------------ dialog */
 
 .dialog {

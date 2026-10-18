@@ -1,5 +1,7 @@
-"""Thin wrappers around NVIDIA's OpenAI-compatible API (embeddings + chat)."""
+"""Thin wrappers around NVIDIA's API: embeddings and chat (OpenAI-compatible), and reranking."""
 
+import json
+import urllib.request
 from collections.abc import AsyncIterator, Callable
 from functools import lru_cache
 
@@ -7,7 +9,7 @@ import numpy as np
 import openai
 from openai import AsyncOpenAI, OpenAI
 
-from .config import get_settings
+from ..core.config import get_settings
 
 
 class NvidiaConfigError(RuntimeError):
@@ -79,6 +81,39 @@ async def embed_query(text: str) -> np.ndarray:
     return np.asarray(resp.data[0].embedding, dtype=np.float32)
 
 
+# Reranking isn't part of the OpenAI-compatible API; each model has its own endpoint.
+RERANK_URL = "https://ai.api.nvidia.com/v1/retrieval/{model}/reranking"
+
+
+def rerank(query: str, passages: list[str]) -> list[float]:
+    """How well each passage answers the query (higher is better). Blocking."""
+    check_key()
+    s = get_settings()
+    request = urllib.request.Request(
+        RERANK_URL.format(model=s.nvidia_rerank_model.replace(".", "_")),
+        data=json.dumps({
+            "model": s.nvidia_rerank_model,
+            "query": {"text": query},
+            "passages": [{"text": p} for p in passages],
+            "truncate": "END",
+        }).encode(),
+        headers={
+            "Authorization": f"Bearer {s.nvidia_api_key}",
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+        },
+    )
+    with urllib.request.urlopen(request, timeout=30) as response:
+        rankings = json.load(response)["rankings"]
+    scores = [float("-inf")] * len(passages)
+    for item in rankings:
+        scores[item["index"]] = item["logit"]
+    return scores
+
+
+CUT_OFF_NOTE = "\n\n*(This answer was cut short because it reached the length limit.)*"
+
+
 async def stream_chat(messages: list[dict]) -> AsyncIterator[str]:
     check_key()
     s = get_settings()
@@ -90,8 +125,16 @@ async def stream_chat(messages: list[dict]) -> AsyncIterator[str]:
         temperature=s.llm_temperature,
         top_p=s.llm_top_p,
         max_tokens=s.llm_max_tokens,
+        # Nemotron models reason before answering by default: ~40x slower here, and the reasoning uses up
+        # the answer's token budget. Answers come from the retrieved passages, so it's turned off (as in ocr.py).
+        extra_body={"chat_template_kwargs": {"enable_thinking": False}} if "nemotron" in s.nvidia_llm_model else None,
         stream=True,
     )
     async for chunk in stream:
-        if chunk.choices and chunk.choices[0].delta.content:
-            yield chunk.choices[0].delta.content
+        if not chunk.choices:
+            continue
+        choice = chunk.choices[0]
+        if choice.delta.content:
+            yield choice.delta.content
+        if choice.finish_reason == "length":
+            yield CUT_OFF_NOTE

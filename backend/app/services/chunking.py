@@ -1,6 +1,18 @@
 """Split section text into overlapping chunks, preferring paragraph and sentence boundaries."""
 
+import re
+
 SEPARATORS = ["\n\n", "\n", ". ", "; ", ", ", " "]
+
+# "Title ........ 12", "Title … 12" or a Word contents line "Title<tab>12"
+TOC_ENTRY = re.compile(r"(?:\.{4,}|…{2,}|(?:\. ){3,}|\t)\s*\d{1,4}\b")
+TOC_MIN_ENTRIES = 5
+
+
+def is_table_of_contents(text: str) -> bool:
+    """A table of contents names almost every topic but answers none, so it would crowd real answers
+    out of search results. It stays in the document view; it just isn't indexed."""
+    return len(TOC_ENTRY.findall(text)) >= TOC_MIN_ENTRIES
 
 
 def split_text(text: str, size: int, overlap: int) -> list[str]:
