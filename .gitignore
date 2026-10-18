@@ -17,3 +17,6 @@ frontend/dist/
 
 # Local test documents
 Document_testing/
+
+# Deployment notes, kept off GitHub
+DEPLOYMENT.md
