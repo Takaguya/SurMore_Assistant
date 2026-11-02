@@ -56,19 +56,33 @@ export function KnowledgeBaseView({ kb, maxUploadMb, onChanged, onDeleted, onSta
 
   async function upload(files: File[]) {
     if (!files.length) return;
-    setUploading(files.length);
-    setRejected([]);
+    // Checked here rather than left to the API: a host such as Vercel turns away large requests before the
+    // API sees them, and the browser then only reports a network error.
+    const maxBytes = maxUploadMb ? maxUploadMb * 1024 * 1024 : Infinity;
+    const fits = files.filter((f) => f.size <= maxBytes);
+    setRejected(
+      files
+        .filter((f) => f.size > maxBytes)
+        .map((f) => ({ filename: f.name, reason: `File is larger than ${maxUploadMb} MB.` })),
+    );
+    setUploading(fits.length);
     setError(null);
     try {
-      const result = await api.uploadDocuments(kb.id, files);
-      setRejected(result.rejected);
-      await load();
-      onChanged();
+      // One file per request, so several files can't add up past the host's request size limit either.
+      for (const file of fits) {
+        const result = await api.uploadDocuments(kb.id, [file]);
+        setRejected((prev) => [...prev, ...result.rejected]);
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setUploading(0);
       if (inputRef.current) inputRef.current.value = "";
+    }
+    if (fits.length) {
+      // Also after an error: the files before it were uploaded.
+      await load();
+      onChanged();
     }
   }
 

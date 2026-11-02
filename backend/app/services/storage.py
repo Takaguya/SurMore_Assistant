@@ -102,6 +102,12 @@ class S3Storage:
             config=Config(signature_version="s3v4", retries={"max_attempts": 3, "mode": "standard"}),
         )
 
+        def label_xml_body(request, **_):
+            request.headers["Content-Type"] = "application/xml"
+
+        # boto3 sends a bulk delete's XML without a Content-Type, and Supabase Storage then ignores the body.
+        self.client.meta.events.register("before-sign.s3.DeleteObjects", label_xml_body)
+
     def save(self, key: str, src: BinaryIO, max_bytes: int) -> int:
         # Spool to a temp file first so the size limit is enforced before anything reaches the bucket.
         with tempfile.TemporaryFile() as tmp:
