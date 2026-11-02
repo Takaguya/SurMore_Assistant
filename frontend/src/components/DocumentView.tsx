@@ -6,6 +6,7 @@ import { useMediaToken } from "../auth";
 import { countSections, fileTypeLabel } from "../format";
 import type { DocumentInfo, KnowledgeBase, Section } from "../types";
 import { FigureStrip } from "./Figures";
+import { MARKDOWN_COMPONENTS } from "./MarkdownImage";
 import { ChevronLeftIcon, OpenIcon, RetryIcon } from "./Icons";
 
 interface Props {
@@ -263,7 +264,9 @@ function SectionBlock({ section, fileType, editing, runningOcr, error, targeted,
           <SectionEditor initial={section.markdown} onSave={actions.onSave} onCancel={actions.onCancel} />
         ) : section.markdown ? (
           <div className="prose section-prose">
-            <ReactMarkdown remarkPlugins={[remarkGfm]}>{section.markdown}</ReactMarkdown>
+            <ReactMarkdown remarkPlugins={[remarkGfm]} components={MARKDOWN_COMPONENTS}>
+              {section.markdown}
+            </ReactMarkdown>
           </div>
         ) : (
           <p className="muted section-empty">No text on this {noun}.</p>
@@ -358,7 +361,9 @@ function SectionEditor({
           <span className="editor-pane-label">Preview</span>
           <div className="prose">
             {value.trim() ? (
-              <ReactMarkdown remarkPlugins={[remarkGfm]}>{value}</ReactMarkdown>
+              <ReactMarkdown remarkPlugins={[remarkGfm]} components={MARKDOWN_COMPONENTS}>
+                {value}
+              </ReactMarkdown>
             ) : (
               <p className="muted">Nothing to preview. An empty section is left out of search.</p>
             )}

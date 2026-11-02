@@ -5,6 +5,7 @@ Also re-indexes a single section after the user edits it or re-runs OCR on it.
 
 import io
 import logging
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from pgvector import HalfVector
 
@@ -12,18 +13,19 @@ from ..core import db
 from ..core.config import get_settings
 from . import nvidia, ocr
 from .chunking import is_table_of_contents, split_text
-from .converters import ExtractionError, Section, convert
+from .converters import IMAGE_FORMATS, ExtractionError, Section, convert
 from .storage import FileMissing, get_storage
 
 logger = logging.getLogger(__name__)
 
 
 MISSING_FILE = "The original file is missing from storage, so it can't be read again. Upload it again."
+FIGURE_UPLOADS_AT_ONCE = 8
 
 
 def _set_progress(document_id: str, message: str) -> None:
     with db.connect() as conn:
-        conn.execute("UPDATE documents SET progress = %s WHERE id = %s", (message, document_id))
+        conn.execute("UPDATE documents SET progress = %s, progress_at = now() WHERE id = %s", (message, document_id))
 
 
 def _chunk_rows(document: dict, section: dict) -> list[tuple[str, str | None]]:
@@ -60,18 +62,23 @@ def _save_sections(document: dict, sections: list[Section], progress) -> None:
     prefix = f"{document['kb_id']}/figures/{document['id']}"
     storage.delete_prefix(prefix)  # figures from an earlier read of the file
 
-    section_rows, figure_rows = [], []
-    total_figures = sum(len(s.figures) for s in sections)
+    section_rows, figure_rows, uploads = [], [], []
     for i, s in enumerate(sections):
         section_id = db.new_id()
         section_rows.append((section_id, document["id"], i, s.location, s.page, s.markdown, s.origin, s.notice))
         for k, figure in enumerate(s.figures):
             figure_id = db.new_id()
             stored_path = f"{prefix}/{figure_id}.webp"
-            storage.save(stored_path, io.BytesIO(figure.data), len(figure.data))
+            uploads.append((stored_path, figure.data))
             figure_rows.append((figure_id, document["id"], section_id, k, stored_path, figure.width, figure.height))
-            if len(figure_rows) % 50 == 0:
-                progress(f"Saving diagrams: {len(figure_rows)} of {total_figures}")
+
+    # Several at a time: one by one, a book's hundreds of diagrams take minutes against a remote bucket.
+    with ThreadPoolExecutor(max_workers=FIGURE_UPLOADS_AT_ONCE) as pool:
+        futures = [pool.submit(storage.save, path, io.BytesIO(data), len(data)) for path, data in uploads]
+        for done, future in enumerate(as_completed(futures), start=1):
+            future.result()
+            if done % 50 == 0:
+                progress(f"Saving diagrams: {done} of {len(uploads)}")
 
     with db.connect() as conn:
         conn.execute("DELETE FROM sections WHERE document_id = %s", (document["id"],))  # cascades to chunks, figures
@@ -186,7 +193,7 @@ def ocr_section(section_id: str) -> None:
             if document["file_type"] == "pdf":
                 image = ocr.render_pdf_page(path, section["page"])
             else:
-                with Image.open(path) as opened:
+                with Image.open(path, formats=IMAGE_FORMATS) as opened:
                     image = opened.copy()
     except FileMissing:
         raise ExtractionError(MISSING_FILE) from None

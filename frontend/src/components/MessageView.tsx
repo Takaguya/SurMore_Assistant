@@ -6,6 +6,7 @@ import { useMediaToken } from "../auth";
 import { fileTypeLabel, splitThinking } from "../format";
 import type { Message, Source } from "../types";
 import { FigureStrip, type FigureItem } from "./Figures";
+import { MarkdownImage } from "./MarkdownImage";
 import { OpenIcon, RetryIcon } from "./Icons";
 
 export interface UIMessage extends Message {
@@ -101,6 +102,7 @@ export const MessageView = memo(function MessageView({ message, onRetry, onOpenS
           <ReactMarkdown
             remarkPlugins={[remarkGfm]}
             components={{
+              img: MarkdownImage,
               a: ({ href, children }) => {
                 const match = href?.match(/^#cite-(\d+)$/);
                 if (match) {

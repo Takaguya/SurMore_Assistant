@@ -4,6 +4,7 @@ Works with any Postgres that has the pgvector extension: the local Docker contai
 docker-compose.yml, or a free hosted database such as Supabase or Neon.
 """
 
+import hashlib
 import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -112,11 +113,17 @@ ALTER TABLE conversations ADD COLUMN IF NOT EXISTS owner_id TEXT NOT NULL DEFAUL
 CREATE INDEX IF NOT EXISTS idx_knowledge_bases_owner ON knowledge_bases(owner_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_conversations_owner ON conversations(owner_id, updated_at);
 
+-- When processing last reported progress (see STALLED_AFTER).
+ALTER TABLE documents ADD COLUMN IF NOT EXISTS progress_at TIMESTAMPTZ NOT NULL DEFAULT now();
+
 -- Keys the server generates for itself (see _media_key in core/auth.py), shared by every server process.
 CREATE TABLE IF NOT EXISTS app_secrets (
     name  TEXT PRIMARY KEY,
     value TEXT NOT NULL
 );
+
+-- Versions of this schema that have been applied (see init_db).
+CREATE TABLE IF NOT EXISTS schema_version (version TEXT PRIMARY KEY);
 
 -- Supabase also serves every table in `public` through its Data API to anyone with the anon key, which the
 -- browser is given. Row level security with no policies shuts that door. The app connects as the tables'
@@ -129,7 +136,16 @@ ALTER TABLE figures ENABLE ROW LEVEL SECURITY;
 ALTER TABLE conversations ENABLE ROW LEVEL SECURITY;
 ALTER TABLE messages ENABLE ROW LEVEL SECURITY;
 ALTER TABLE app_secrets ENABLE ROW LEVEL SECURITY;
+ALTER TABLE schema_version ENABLE ROW LEVEL SECURITY;
 """
+
+# Applied only when it changes rather than on every start: it takes table locks, and serverless hosts start often.
+SCHEMA_VERSION = hashlib.sha256(SCHEMA.encode()).hexdigest()[:16]
+
+# A document that hasn't reported progress for this long counts as failed. Serverless hosts (Vercel) stop work at
+# their time limit without telling anyone, and other instances may be processing while one starts up.
+STALLED_AFTER = "10 minutes"
+STALLED_ERROR = "Processing stopped before it finished. Click Retry."
 
 _pool: ConnectionPool | None = None
 
@@ -156,11 +172,15 @@ def init_db() -> None:
     try:
         # The extension must exist before pgvector types can be registered on pooled connections.
         with psycopg.connect(settings.database_url, autocommit=True, prepare_threshold=None) as conn:
-            conn.execute(SCHEMA)
-            # Anything still "processing" was interrupted by a server restart.
+            if not _schema_is_current(conn):
+                conn.execute(SCHEMA)
+                conn.execute(
+                    "INSERT INTO schema_version (version) VALUES (%s) ON CONFLICT DO NOTHING", (SCHEMA_VERSION,)
+                )
             conn.execute(
-                "UPDATE documents SET status = 'failed', progress = NULL, error = %s WHERE status = 'processing'",
-                ("Processing was interrupted because the server restarted. Click Retry.",),
+                """UPDATE documents SET status = 'failed', progress = NULL, error = %s
+                   WHERE status = 'processing' AND progress_at < now() - %s::interval""",
+                (STALLED_ERROR, STALLED_AFTER),
             )
     except psycopg.OperationalError as exc:
         raise RuntimeError(
@@ -177,6 +197,12 @@ def init_db() -> None:
         configure=register_vector,
         open=True,
     )
+
+
+def _schema_is_current(conn: psycopg.Connection) -> bool:
+    if conn.execute("SELECT to_regclass('public.schema_version')").fetchone()[0] is None:
+        return False
+    return conn.execute("SELECT 1 FROM schema_version WHERE version = %s", (SCHEMA_VERSION,)).fetchone() is not None
 
 
 def close_db() -> None:

@@ -53,6 +53,10 @@ FIGURE_MAX_AREA = 0.85
 FIGURES_PER_SECTION = 6
 FIGURE_MAX_PX = 1600
 
+# The only formats Pillow may decode: those of the accepted image files and of pictures inside Word and
+# PowerPoint files. Otherwise Pillow goes by the content, so a renamed file could reach its rarer decoders.
+IMAGE_FORMATS = ["PNG", "JPEG", "GIF", "BMP", "TIFF", "WEBP"]
+
 # Running headers and footers sit in the first or last few lines of a page.
 EDGE_LINES = 3
 PAGE_NUMBER = re.compile(r"^(page\s*)?[-–—]?\s*\d{1,4}\s*[-–—]?(\s*(of|/)\s*\d{1,4})?$", re.IGNORECASE)
@@ -355,7 +359,7 @@ def _figure_from_bytes(data: bytes, min_px: int = 150) -> Figure | None:
     from PIL import Image
 
     try:
-        with Image.open(io.BytesIO(data)) as image:
+        with Image.open(io.BytesIO(data), formats=IMAGE_FORMATS) as image:
             image.load()
             if min(image.size) < min_px:
                 return None
@@ -373,7 +377,7 @@ def _convert_image(path: Path, progress: Progress) -> list[Section]:
     if get_settings().ocr_mode == "off":
         raise ExtractionError("Images can only be read with OCR, which is off. Set OCR_MODE=auto in backend/.env.")
     try:
-        image = Image.open(path)
+        image = Image.open(path, formats=IMAGE_FORMATS)
         image.load()
     except (UnidentifiedImageError, OSError) as exc:
         raise ExtractionError(f"Couldn't open this image: {exc}") from exc
@@ -545,7 +549,7 @@ def _convert_pptx(path: Path, progress: Progress) -> list[Section]:
                 try:
                     from PIL import Image
 
-                    text = ocr.image_to_markdown(Image.open(io.BytesIO(blob)))
+                    text = ocr.image_to_markdown(Image.open(io.BytesIO(blob), formats=IMAGE_FORMATS))
                 except ocr.FATAL_ERRORS:
                     raise
                 except Exception as exc:  # unreadable image format or OCR failure

@@ -31,11 +31,12 @@ router = APIRouter(prefix="/api", tags=["documents"])
 # Only documents in knowledge bases the user owns are visible.
 _OWNED = "d.kb_id IN (SELECT id FROM knowledge_bases WHERE owner_id = %s)"
 
-_SELECT_DOCUMENT = """
+_SELECT_DOCUMENT = f"""
 SELECT d.*,
        (SELECT count(*) FROM sections s WHERE s.document_id = d.id) AS section_count,
        (SELECT count(*) FROM sections s WHERE s.document_id = d.id AND s.origin = 'ocr') AS ocr_sections,
-       (SELECT count(*) FROM sections s WHERE s.document_id = d.id AND s.edited) AS edited_sections
+       (SELECT count(*) FROM sections s WHERE s.document_id = d.id AND s.edited) AS edited_sections,
+       d.status = 'processing' AND d.progress_at < now() - interval '{db.STALLED_AFTER}' AS stalled
 FROM documents d
 """
 
@@ -43,6 +44,8 @@ FROM documents d
 def _to_model(row: dict) -> Document:
     data = dict(row)
     data.pop("stored_path")
+    if data.pop("stalled"):
+        data.update(status="failed", progress=None, error=db.STALLED_ERROR)
     data["needs_reindex"] = (
         data["status"] == "ready" and data["embedding_model"] != get_settings().nvidia_embedding_model
     )
@@ -223,14 +226,15 @@ def reprocess_document(
     auto: reindex when the document already has sections, otherwise extract."""
     with db.connect() as conn:
         row = _get_doc_or_404(conn, document_id, user)
-        if row["status"] == "processing":
+        if row["status"] == "processing" and not row["stalled"]:
             raise HTTPException(409, "This document is already being processed")
         if mode == "auto":
             mode = "reindex" if row["section_count"] else "extract"
         if mode == "reindex" and not row["section_count"]:
             raise HTTPException(400, "This document has no text to index yet. Read the file again instead.")
         conn.execute(
-            "UPDATE documents SET status = 'processing', progress = 'Waiting to start', error = NULL WHERE id = %s",
+            """UPDATE documents SET status = 'processing', progress = 'Waiting to start', progress_at = now(),
+               error = NULL WHERE id = %s""",
             (document_id,),
         )
         row = _get_doc_or_404(conn, document_id, user)
