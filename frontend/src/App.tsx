@@ -188,6 +188,7 @@ export default function App() {
             key={activeKb.id}
             kb={activeKb}
             maxUploadMb={health?.max_upload_mb}
+            directUploads={health?.direct_uploads ?? false}
             onChanged={refreshKnowledgeBases}
             onDeleted={async () => {
               await refreshKnowledgeBases();

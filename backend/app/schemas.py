@@ -54,6 +54,22 @@ class UploadResult(BaseModel):
     rejected: list[RejectedFile]
 
 
+class UploadStart(BaseModel):
+    filename: Annotated[str, StringConstraints(min_length=1, max_length=255)]
+    size: Annotated[int, Field(ge=0)]
+
+
+class UploadLink(BaseModel):
+    """Where the browser sends the file itself (PUT, straight to the bucket), and the id it will have."""
+
+    url: str
+    document_id: str
+
+
+class UploadDone(BaseModel):
+    filename: Annotated[str, StringConstraints(min_length=1, max_length=255)]
+
+
 class Figure(BaseModel):
     """A diagram or picture from a section; the image is at /api/figures/{id}."""
 
@@ -136,3 +152,4 @@ class Health(BaseModel):
     ocr_model: str
     ocr_mode: str
     max_upload_mb: int
+    direct_uploads: bool  # files go from the browser straight to the bucket (STORAGE_BACKEND=s3)

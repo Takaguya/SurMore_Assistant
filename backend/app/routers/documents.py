@@ -1,4 +1,5 @@
 import mimetypes
+import re
 from pathlib import Path
 from typing import Literal
 
@@ -8,7 +9,17 @@ from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Re
 from ..core import db, limits
 from ..core.auth import User, current_user, media_user
 from ..core.config import get_settings
-from ..schemas import Document, Figure, RejectedFile, Section, SectionUpdate, UploadResult
+from ..schemas import (
+    Document,
+    Figure,
+    RejectedFile,
+    Section,
+    SectionUpdate,
+    UploadDone,
+    UploadLink,
+    UploadResult,
+    UploadStart,
+)
 from ..services import ingestion, nvidia
 from ..services.converters import ExtractionError, detect_file_type
 from ..services.rag import figures_by_section
@@ -76,8 +87,7 @@ def upload_documents(
             continue
 
         doc_id = db.new_id()
-        # Stored under a generated name; the original filename only lives in the database.
-        stored_path = f"{kb_id}/{doc_id}{Path(filename).suffix.lower()}"
+        stored_path = _stored_path(kb_id, doc_id, filename)
         max_bytes = settings.max_upload_mb * 1024 * 1024
         out_of_space = space_left is not None and space_left < max_bytes
         try:
@@ -109,6 +119,91 @@ def upload_documents(
     with db.connect() as conn:
         rows = [_get_doc_or_404(conn, doc_id, user) for doc_id in accepted]
     return UploadResult(documents=[_to_model(r) for r in rows], rejected=rejected)
+
+
+# Direct uploads (STORAGE_BACKEND=s3): the browser sends the file straight to the bucket, so it never passes
+# through this server or its host's request size limit (4.5 MB on Vercel). Two steps: get a link for the file,
+# then report it as arrived.
+
+
+@router.post("/knowledge-bases/{kb_id}/uploads", response_model=UploadLink)
+def start_upload(kb_id: str, body: UploadStart, user: User = Depends(current_user)):
+    _require_direct_uploads()
+    filename = _upload_filename(body.filename)
+    with db.connect() as conn:
+        get_kb_or_404(conn, kb_id, user)
+        _check_upload_size(body.size, limits.storage_left_bytes(conn, user.id))
+        limits.check_upload(conn, user.id, 1)
+    doc_id = db.new_id()
+    url = get_storage().upload_url(_stored_path(kb_id, doc_id, filename), body.size)
+    return UploadLink(url=url, document_id=doc_id)
+
+
+@router.post("/knowledge-bases/{kb_id}/uploads/{document_id}", response_model=Document, status_code=201)
+def finish_upload(
+    kb_id: str, document_id: str, body: UploadDone, background: BackgroundTasks, user: User = Depends(current_user)
+):
+    _require_direct_uploads()
+    if not re.fullmatch(r"[0-9a-f]{32}", document_id):
+        raise HTTPException(404, "Upload not found")
+    filename = _upload_filename(body.filename)
+    stored_path = _stored_path(kb_id, document_id, filename)
+    storage = get_storage()
+    with db.connect() as conn:
+        get_kb_or_404(conn, kb_id, user)
+        space_left = limits.storage_left_bytes(conn, user.id)
+    try:
+        size = storage.size(stored_path)
+    except FileMissing:
+        raise HTTPException(400, f"{filename} didn't finish uploading. Try again.") from None
+    try:
+        _check_upload_size(size, space_left)
+    except HTTPException:
+        storage.delete(stored_path)
+        raise
+
+    with db.connect() as conn:
+        added = conn.execute(
+            """INSERT INTO documents (id, kb_id, filename, file_type, size_bytes, stored_path, status, progress)
+               VALUES (%s, %s, %s, %s, %s, %s, 'processing', 'Waiting to start')
+               ON CONFLICT (id) DO NOTHING RETURNING id""",
+            (document_id, kb_id, filename, detect_file_type(filename), size, stored_path),
+        ).fetchone()
+        row = _get_doc_or_404(conn, document_id, user)
+    if added:  # not when the same upload is reported twice
+        background.add_task(ingestion.process_document, document_id)
+    return _to_model(row)
+
+
+def _require_direct_uploads() -> None:
+    if get_settings().storage_backend != "s3":
+        raise HTTPException(400, "Direct uploads need STORAGE_BACKEND=s3.")
+
+
+def _upload_filename(name: str) -> str:
+    filename = Path(name).name
+    try:
+        detect_file_type(filename)
+    except ExtractionError as exc:
+        raise HTTPException(400, str(exc)) from None
+    return filename
+
+
+def _check_upload_size(size: int, space_left: int | None) -> None:
+    settings = get_settings()
+    if size == 0:
+        raise HTTPException(400, "File is empty.")
+    if size > settings.max_upload_mb * 1024 * 1024:
+        raise HTTPException(413, f"File is larger than {settings.max_upload_mb} MB.")
+    if space_left is not None and size > space_left:
+        raise HTTPException(
+            413, f"Not enough space left in your account ({settings.limit_storage_mb_per_user} MB limit)."
+        )
+
+
+def _stored_path(kb_id: str, document_id: str, filename: str) -> str:
+    # Stored under a generated name; the original filename only lives in the database.
+    return f"{kb_id}/{document_id}{Path(filename).suffix.lower()}"
 
 
 @router.get("/documents/{document_id}", response_model=Document)

@@ -72,6 +72,20 @@ export const api = {
     files.forEach((f) => form.append("files", f));
     return request<UploadResult>(`/api/knowledge-bases/${kbId}/documents`, { method: "POST", body: form });
   },
+  /** Sends the file straight to the bucket with a one-time link, past the API host's request size limit. */
+  uploadDocumentDirect: async (kbId: string, file: File) => {
+    const link = await request<{ url: string; document_id: string }>(
+      `/api/knowledge-bases/${kbId}/uploads`,
+      json("POST", { filename: file.name, size: file.size }),
+    );
+    // No Authorization header: the link itself is the permission.
+    const res = await fetch(link.url, { method: "PUT", body: file });
+    if (!res.ok) throw new ApiError(`Couldn't upload ${file.name} (${res.status}). Try again.`, res.status);
+    return request<DocumentInfo>(
+      `/api/knowledge-bases/${kbId}/uploads/${link.document_id}`,
+      json("POST", { filename: file.name }),
+    );
+  },
   getDocument: (id: string) => request<DocumentInfo>(`/api/documents/${id}`),
   /** auto: re-index if the document has text, else read the file. extract: read the file again (replaces edits). */
   reprocessDocument: (id: string, mode: "auto" | "extract" | "reindex" = "auto") =>

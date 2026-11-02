@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type DragEvent } from "react";
-import { api } from "../api";
+import { ApiError, api } from "../api";
 import { useMediaToken } from "../auth";
 import { ACCEPTED_EXTENSIONS, countSections, fileTypeLabel, formatBytes } from "../format";
 import type { DocumentInfo, KnowledgeBase, RejectedFile } from "../types";
@@ -9,6 +9,7 @@ import { KbFormDialog } from "./KbFormDialog";
 interface Props {
   kb: KnowledgeBase;
   maxUploadMb?: number;
+  directUploads: boolean;
   onChanged: () => void;
   onDeleted: () => void;
   onStartChat: (kbId: string) => void;
@@ -17,7 +18,15 @@ interface Props {
 
 const POLL_MS = 2000;
 
-export function KnowledgeBaseView({ kb, maxUploadMb, onChanged, onDeleted, onStartChat, onOpenDocument }: Props) {
+export function KnowledgeBaseView({
+  kb,
+  maxUploadMb,
+  directUploads,
+  onChanged,
+  onDeleted,
+  onStartChat,
+  onOpenDocument,
+}: Props) {
   const [documents, setDocuments] = useState<DocumentInfo[] | null>(null);
   const [uploading, setUploading] = useState<number>(0);
   const [rejected, setRejected] = useState<RejectedFile[]>([]);
@@ -70,8 +79,18 @@ export function KnowledgeBaseView({ kb, maxUploadMb, onChanged, onDeleted, onSta
     try {
       // One file per request, so several files can't add up past the host's request size limit either.
       for (const file of fits) {
-        const result = await api.uploadDocuments(kb.id, [file]);
-        setRejected((prev) => [...prev, ...result.rejected]);
+        if (!directUploads) {
+          const result = await api.uploadDocuments(kb.id, [file]);
+          setRejected((prev) => [...prev, ...result.rejected]);
+          continue;
+        }
+        try {
+          await api.uploadDocumentDirect(kb.id, file);
+        } catch (err) {
+          // Turned away for this file only (too big, wrong type, a limit): note it and carry on with the rest.
+          if (!(err instanceof ApiError) || err.status >= 500) throw err;
+          setRejected((prev) => [...prev, { filename: file.name, reason: err.message }]);
+        }
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));

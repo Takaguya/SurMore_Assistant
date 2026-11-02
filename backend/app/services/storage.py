@@ -117,6 +117,22 @@ class S3Storage:
                 self.client.upload_fileobj(tmp, self.bucket, key)
             return size
 
+    def upload_url(self, key: str, size: int) -> str:
+        """A short-lived link the browser PUTs a file to. The size is signed in, so no other size is accepted."""
+        return self.client.generate_presigned_url(
+            "put_object", Params={"Bucket": self.bucket, "Key": key, "ContentLength": size}, ExpiresIn=LINK_SECONDS
+        )
+
+    def size(self, key: str) -> int:
+        from botocore.exceptions import ClientError
+
+        try:
+            return self.client.head_object(Bucket=self.bucket, Key=key)["ContentLength"]
+        except ClientError as exc:
+            if exc.response.get("Error", {}).get("Code") in ("404", "NoSuchKey", "NotFound"):
+                raise FileMissing from exc
+            raise
+
     @contextmanager
     def local_copy(self, key: str) -> Iterator[Path]:
         from botocore.exceptions import ClientError

@@ -100,4 +100,6 @@ export interface Health {
   ocr_model: string;
   ocr_mode: string;
   max_upload_mb: number;
+  /** Files go from the browser straight to the bucket (see api.uploadDocumentDirect). */
+  direct_uploads: boolean;
 }

@@ -150,6 +150,7 @@ def health():
         ocr_model=s.nvidia_ocr_model,
         ocr_mode=s.ocr_mode,
         max_upload_mb=s.max_upload_mb,
+        direct_uploads=s.storage_backend == "s3",
     )
 
 
