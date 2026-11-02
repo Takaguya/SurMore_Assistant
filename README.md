@@ -16,13 +16,11 @@ Every answer cites the exact passages it came from and shows the diagrams on tho
 
 **https://surmore-assistant.web.app**
 
-The demo is invite-only for now, because every answer and every scanned page uses the maintainer's NVIDIA quota.
+Sign in with any Google account:
 
-1. Ask [@Takaguya](https://github.com/Takaguya) for an invite. If you open a GitHub issue for it, don't put your
-   email address in the issue; you'll be asked for it privately.
-2. You'll get an email with a sign-in link. Open it in the browser you want to use. There's no password: next time,
-   click **Email me a sign-in link** on the site.
-3. Create a knowledge base, upload a few files and start asking.
+1. Open the site and click **Continue with Google**. Google asks you to confirm and may show a `supabase.co`
+   address: that's the service the demo uses for sign-in.
+2. Create a knowledge base, upload a few files and start asking.
 
 What to expect:
 
@@ -32,7 +30,9 @@ What to expect:
   on when you come back.
 - Your knowledge bases, files and chats are private to your account. It's still a demo run by one person, so
   don't upload confidential documents.
-- It runs on free plans. After a week without visitors it may be asleep; ask the maintainer to wake it up.
+- It runs on free plans, and every answer and scanned page uses the maintainer's free NVIDIA quota, so it can be
+  slow or stop for a while when it's busy. After a week without visitors it may be asleep; ask
+  [@Takaguya](https://github.com/Takaguya) to wake it up.
 
 ## How it works
 
