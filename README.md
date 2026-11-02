@@ -1,8 +1,8 @@
 # SurMore Assistant
 
 Turn your lesson slides, PDFs, Word documents and spreadsheets into a chatbot that answers from them.
-You put files into **knowledge bases**, check and fix the text the app reads from them, then ask
-questions. Every answer points to the exact passages it came from and shows the diagrams on those pages.
+You put files into **knowledge bases**, check and fix the text the app reads from them, then ask questions.
+Every answer cites the exact passages it came from and shows the diagrams on those pages, so you can check it.
 
 - **Many knowledge bases**: one per course, project or topic. A chat can use one or several at once.
 - **Most office files**: PDF, Word (.docx), PowerPoint (.pptx), Excel (.xlsx/.xlsm), CSV, text, Markdown and images.
@@ -11,6 +11,28 @@ questions. Every answer points to the exact passages it came from and shows the 
 - **You stay in control of the text**: every file is shown page by page, and you can correct any part.
 - **Answers you can check**: numbered citations open the passage, the original file, or the page in the app.
 - **Diagrams with answers**: the diagrams and pictures in your files are saved and shown under answers that cite them.
+
+## Try the live demo
+
+**https://surmore-assistant.web.app**
+
+The demo is invite-only for now, because every answer and every scanned page uses the maintainer's NVIDIA quota.
+
+1. Ask [@Takaguya](https://github.com/Takaguya) for an invite. If you open a GitHub issue for it, don't put your
+   email address in the issue; you'll be asked for it privately.
+2. You'll get an email with a sign-in link. Open it in the browser you want to use. There's no password: next time,
+   click **Email me a sign-in link** on the site.
+3. Create a knowledge base, upload a few files and start asking.
+
+What to expect:
+
+- Files can be up to 50 MB.
+- Scanned books take a while: every page is read with OCR, roughly 25 pages a minute, so a 300-page scan needs
+  about 15 to 25 minutes. Keep the site open while it works. If you close the tab, processing pauses and carries
+  on when you come back.
+- Your knowledge bases, files and chats are private to your account. It's still a demo run by one person, so
+  don't upload confidential documents.
+- It runs on free plans. After a week without visitors it may be asleep; ask the maintainer to wake it up.
 
 ## How it works
 
@@ -30,9 +52,9 @@ questions. Every answer points to the exact passages it came from and shows the 
 3. **Review.** You open a file to see its text section by section, next to where it came from (page 3, slide 7,
    "Chapter 2"…), with its diagrams. If something was read wrong, or you want to add context, you edit it.
 4. **Index.** The text is split into short passages, and an NVIDIA embedding model turns each passage into a
-   vector, a list of numbers that captures what the passage means. They're stored in PostgreSQL with pgvector.
-   Edits are re-indexed the moment you save them. Tables of contents are left out, because they match almost
-   every question without answering any.
+   vector, a list of numbers that captures what the passage means. They're stored in PostgreSQL with the pgvector
+   extension. Edits are re-indexed the moment you save them. Tables of contents are left out, because they match
+   almost every question without answering any.
 5. **Ask.** The app looks for passages close to your question in meaning, plus passages that share its keywords.
    An NVIDIA reranking model then scores each one against the question, and the best 6 are kept. This is called
    retrieval-augmented generation (RAG).
@@ -43,7 +65,7 @@ Built with FastAPI (Python), PostgreSQL + pgvector, React, and models from [buil
 
 ## Get an NVIDIA API key
 
-The app uses NVIDIA's hosted models for reading, searching and answering, so it needs a free API key.
+To run the app yourself you need a free NVIDIA API key, for reading, searching and answering.
 
 1. Go to [build.nvidia.com](https://build.nvidia.com) and sign in, or create a free NVIDIA account with your
    email. No credit card is needed.
@@ -56,6 +78,9 @@ The free tier is meant for trying things out, so it has rate limits, and respons
 NVIDIA's service is busy. Keep the key private: anyone with it can use your NVIDIA account.
 
 ## Run it on your computer
+
+On your own computer the app is just for you: there's no sign-in, files are kept on your disk, files can be up to
+200 MB, and every document is processed in one go in the background.
 
 You need:
 
@@ -73,6 +98,8 @@ cd SurMore_Assistant
 
 **2. Start the database**
 
+Start Docker Desktop, then in the project folder:
+
 ```bash
 docker compose up -d
 ```
@@ -81,16 +108,22 @@ This runs PostgreSQL with pgvector on port 5433. Your data is kept between resta
 
 **3. Add your NVIDIA key**
 
-Copy `backend/.env.example` to `backend/.env`, then fill in two lines:
+Copy the example settings:
+
+```bash
+# Windows
+copy backend\.env.example backend\.env
+# macOS / Linux
+cp backend/.env.example backend/.env
+```
+
+Open `backend/.env` and paste your key after `NVIDIA_API_KEY=`:
 
 ```env
 NVIDIA_API_KEY=nvapi-...
-NVIDIA_LLM_MODEL=nvidia/nemotron-3.5-super-vl-120b-a12b
 ```
 
-`NVIDIA_LLM_MODEL` is the model that writes the answers; any chat model on build.nvidia.com works. The one above is
-fast, and it's the same model the app uses to read scans and diagrams. Everything else has working defaults;
-`backend/.env.example` explains each setting. Keep `.env` private: it's already excluded from git.
+Everything else works as it is; `backend/.env` explains each setting. Keep the file private and never commit it.
 
 **4. Start the backend** (in one terminal)
 
@@ -124,9 +157,26 @@ npm run dev
 
 Open **http://localhost:5180**.
 
-Next time, you only need `docker compose up -d`, the `uvicorn` line from step 4 (run inside `backend`) and
-`npm run dev` (inside `frontend`). The backend reads `backend/.env` when it starts, so restart it after you change
-that file.
+### Next time
+
+Start the three parts in this order, then open http://localhost:5180:
+
+1. The database: start Docker Desktop, then `docker compose up -d` in the project folder.
+2. The backend, inside `backend`: `.venv\Scripts\python -m uvicorn app.main:app --reload` on Windows, or
+   `.venv/bin/python -m uvicorn app.main:app --reload` on macOS / Linux.
+3. The frontend, inside `frontend`: `npm run dev`.
+
+The backend reads `backend/.env` when it starts, so restart it after you change that file.
+
+### If something isn't working
+
+- **"Can't reach the SurMore backend", or your knowledge bases and chats look empty:** the page was opened before
+  the backend was ready. Start the backend and reload the page. Nothing was lost.
+- **The backend stops with "Couldn't connect to PostgreSQL":** Docker Desktop isn't running, or the database
+  wasn't started. Start Docker Desktop and run `docker compose up -d`.
+- **Uploads or answers fail with an error mentioning "end of life":** NVIDIA retired a model. Pick a current one
+  on [build.nvidia.com](https://build.nvidia.com), put its name in `backend/.env` and restart the backend.
+- **"NVIDIA rejected the API key":** check `NVIDIA_API_KEY` in `backend/.env`, then restart the backend.
 
 ## Using the app
 
@@ -164,7 +214,7 @@ knowledge.
 | Images (PNG, JPG, WebP, TIFF, BMP) | one section | read with OCR, and kept as a diagram |
 
 Old formats (.doc, .ppt, .xls) aren't supported. Save them as .docx, .pptx or .xlsx first. Files can be up to
-200 MB.
+200 MB on your computer (`MAX_UPLOAD_MB`) and 50 MB in the live demo.
 
 Diagrams drawn as shapes rather than embedded as images (Word and PowerPoint charts, SmartArt, vector drawings
 in PDFs) aren't saved, but OCR still reads their text on pages that need it.
@@ -176,7 +226,7 @@ most likely to change:
 
 | Setting | Default | What it does |
 |---|---|---|
-| `NVIDIA_LLM_MODEL` | (none, required) | The model that writes answers |
+| `NVIDIA_LLM_MODEL` | `nvidia/nemotron-3.5-super-vl-120b-a12b` | The model that writes answers; any chat model on build.nvidia.com works |
 | `NVIDIA_EMBEDDING_MODEL` | `nvidia/nemotron-3-embed-1b` | Turns passages into vectors for search |
 | `NVIDIA_OCR_MODEL` | `nvidia/nemotron-3.5-super-vl-120b-a12b` | Reads scans and diagrams. `nvidia/nemotron-parse` also works, but invents words on diagrams |
 | `NVIDIA_RERANK_MODEL` | `nvidia/llama-nemotron-rerank-vl-1b-v2` | Picks the best passages for each question. Leave it empty to turn reranking off |
@@ -184,13 +234,13 @@ most likely to change:
 | `EXTRACT_FIGURES` | `true` | Save diagrams and pictures from files |
 | `LLM_MAX_TOKENS` | `1024` | Longest answer. Answers that hit it end with a note saying so |
 | `RETRIEVAL_TOP_K` | `6` | How many passages each answer is based on |
+| `MAX_UPLOAD_MB` | `200` | Largest file you can upload |
 
 ## Good to know
 
 - If you change `NVIDIA_EMBEDDING_MODEL` after uploading files, those files show **Needs re-indexing**. Click
   **Re-index** on each one. Your edits are kept.
-- NVIDIA retires models from time to time. If uploads or answers fail with an error mentioning "end of life", pick
-  a current model on [build.nvidia.com](https://build.nvidia.com) and update `backend/.env`.
-- Your data lives in the Docker volume `surmore-pgdata` (database) and in `backend/data/uploads/` (original files
-  and diagrams).
+- Your data lives in a Docker volume (`docker volume ls` shows it as `…_surmore-pgdata`) and in
+  `backend/data/uploads/` (original files and diagrams). `docker compose down` keeps it; deleting the volume
+  removes it.
 - Interactive API documentation is at http://127.0.0.1:8000/docs while the backend runs.
