@@ -1,7 +1,9 @@
+import os
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 BACKEND_DIR = Path(__file__).resolve().parents[2]  # backend/app/core/config.py -> backend/
@@ -36,6 +38,11 @@ class Settings(BaseSettings):
 
     # Save the diagrams and pictures in PDFs, slides, Word files and images, to show them with answers.
     extract_figures: bool = True
+
+    # Serverless hosts stop a request after a few minutes (Vercel: 300 s), so there a document is processed in
+    # rounds of at most this many seconds, each picking up where the last one stopped. 0 processes it in one go,
+    # in the background, which needs a server without such a limit. Default: 240 on Vercel, otherwise 0.
+    processing_round_seconds: int = Field(default_factory=lambda: 240 if os.environ.get("VERCEL") else 0)
 
     llm_temperature: float = 0.2
     llm_top_p: float = 0.7

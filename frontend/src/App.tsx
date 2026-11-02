@@ -6,6 +6,7 @@ import { MenuIcon } from "./components/Icons";
 import { KbFormDialog } from "./components/KbFormDialog";
 import { KnowledgeBaseView } from "./components/KnowledgeBaseView";
 import { Sidebar } from "./components/Sidebar";
+import { enableProcessingRounds } from "./processing";
 import type { Conversation, Health, KnowledgeBase, Source } from "./types";
 
 type View =
@@ -62,7 +63,10 @@ export default function App() {
   useEffect(() => {
     api
       .health()
-      .then(setHealth)
+      .then((h) => {
+        setHealth(h);
+        enableProcessingRounds(h.processing_rounds);
+      })
       .catch(() => setBackendDown(true));
     refreshKnowledgeBases();
     refreshConversations();

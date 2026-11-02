@@ -91,6 +91,10 @@ export const api = {
   reprocessDocument: (id: string, mode: "auto" | "extract" | "reindex" = "auto") =>
     request<DocumentInfo>(`/api/documents/${id}/reprocess?mode=${mode}`, { method: "POST" }),
   deleteDocument: (id: string) => request<void>(`/api/documents/${id}`, { method: "DELETE" }),
+  /** Documents still being processed, and whether a round is working on each right now. */
+  listProcessing: () => request<{ id: string; busy: boolean }[]>("/api/processing"),
+  /** One round of processing; takes up to a few minutes. */
+  processDocument: (id: string) => request<DocumentInfo>(`/api/documents/${id}/process`, { method: "POST" }),
   documentFileUrl: (id: string, mediaToken: string | null, fileType?: string, location?: string | null) => {
     const page = fileType === "pdf" ? location?.match(/^Page (\d+)/)?.[1] : undefined;
     return `${BASE}/api/documents/${id}/file${withMediaToken(mediaToken)}${page ? `#page=${page}` : ""}`;

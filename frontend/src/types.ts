@@ -102,4 +102,6 @@ export interface Health {
   max_upload_mb: number;
   /** Files go from the browser straight to the bucket (see api.uploadDocumentDirect). */
   direct_uploads: boolean;
+  /** The browser runs document processing in rounds (see processing.ts). */
+  processing_rounds: boolean;
 }

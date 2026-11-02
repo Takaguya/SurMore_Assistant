@@ -151,6 +151,7 @@ def health():
         ocr_mode=s.ocr_mode,
         max_upload_mb=s.max_upload_mb,
         direct_uploads=s.storage_backend == "s3",
+        processing_rounds=bool(s.processing_round_seconds),
     )
 
 

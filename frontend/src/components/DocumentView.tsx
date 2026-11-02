@@ -3,6 +3,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { api } from "../api";
 import { useMediaToken } from "../auth";
+import { kickProcessing } from "../processing";
 import { countSections, fileTypeLabel } from "../format";
 import type { DocumentInfo, KnowledgeBase, Section } from "../types";
 import { FigureStrip } from "./Figures";
@@ -115,6 +116,7 @@ export function DocumentView({ documentId, kb, targetSectionId, onBack, onChange
     }
     try {
       setDoc(await api.reprocessDocument(documentId, mode));
+      kickProcessing();
       setError(null);
       if (mode === "extract") setSections(null);
       setEditingId(null);

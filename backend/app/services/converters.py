@@ -100,9 +100,9 @@ def detect_file_type(filename: str) -> str:
 
 
 def convert(path: Path, file_type: str, progress: Progress) -> list[Section]:
+    """Any file but a PDF, in one go. PDFs go page by page instead (read_pdf_pages, then OCR and figures)."""
     max_chars = get_settings().chunk_size
     converter = {
-        "pdf": lambda: _convert_pdf(path, progress),
         "docx": lambda: _split_long(_convert_docx(path)),
         "pptx": lambda: _convert_pptx(path, progress),
         "xlsx": lambda: _convert_xlsx(path, max_chars),
@@ -112,8 +112,7 @@ def convert(path: Path, file_type: str, progress: Progress) -> list[Section]:
         "image": lambda: _convert_image(path, progress),
     }[file_type]
     sections = [replace(s, markdown=_clean(s.markdown)) for s in converter()]
-    # PDF pages are kept even when empty so page numbers line up and the page can be OCR'd later.
-    return [s for s in sections if s.markdown or s.page is not None or s.figures]
+    return [s for s in sections if s.markdown or s.figures]
 
 
 def ocr_failure_notice(exc: Exception) -> str:
@@ -134,11 +133,15 @@ def _visible_chars(text: str) -> int:
 # --------------------------------------------------------------------------- PDF
 
 
-def _convert_pdf(path: Path, progress: Progress) -> list[Section]:
+def read_pdf_pages(path: Path, progress: Progress) -> list[Section]:
+    """One section per page with the text stored in the PDF, minus running headers, footers and page numbers.
+
+    Pages without enough stored text are read with OCR afterwards, one by one (needs_ocr, pdf_page_after_ocr),
+    so processing can stop between pages and pick up again. Empty pages are kept so page numbers line up.
+    """
     from pypdf import PdfReader
     from pypdf.errors import PdfReadError
 
-    settings = get_settings()
     try:
         reader = PdfReader(path)
         if reader.is_encrypted and not reader.decrypt(""):
@@ -157,51 +160,38 @@ def _convert_pdf(path: Path, progress: Progress) -> list[Section]:
 
     # Site names, book titles and page numbers on every page only add noise to search.
     boilerplate = _repeated_lines(texts)
-    texts = [_strip_boilerplate(text, boilerplate) for text in texts]
+    return [
+        Section(_clean(_pdf_text_to_markdown(_strip_boilerplate(text, boilerplate))), f"Page {number}", page=number)
+        for number, text in enumerate(texts, start=1)
+    ]
 
-    if settings.ocr_mode == "off":
-        to_ocr: list[int] = []
-    else:
-        to_ocr = [
-            number
-            for number, text in enumerate(texts, start=1)
-            if settings.ocr_mode == "always" or _visible_chars(text) < settings.ocr_min_text_chars
-        ]
-    results = (
-        ocr.ocr_pdf_pages(path, to_ocr, lambda done, n: progress(f"Running OCR: page {done} of {n}"))
-        if to_ocr
-        else {}
+
+def needs_ocr(markdown: str) -> bool:
+    """Whether a PDF page is read with OCR (OCR_MODE: auto reads the pages with too little stored text)."""
+    settings = get_settings()
+    return settings.ocr_mode == "always" or (
+        settings.ocr_mode == "auto" and _visible_chars(markdown) < settings.ocr_min_text_chars
     )
 
-    figures = _pdf_figures(path, progress) if settings.extract_figures else {}
 
-    sections = []
-    for number, text in enumerate(texts, start=1):
-        result = results.get(number)
-        if isinstance(result, str):
-            result = _strip_boilerplate(result, boilerplate)
-        location = f"Page {number}"
-        page_figures = figures.get(number, [])
-        if isinstance(result, str) and result.strip():
-            sections.append(Section(result, location, page=number, origin="ocr", figures=page_figures))
-            continue
-        notice = None
-        if isinstance(result, Exception):
-            notice = ocr_failure_notice(result) + (" Showing the text stored in the PDF instead." if text.strip() else "")
-        elif result == "" and not text.strip():
-            notice = "OCR found no text on this page."
-        sections.append(
-            Section(_pdf_text_to_markdown(text), location, page=number, notice=notice, figures=page_figures)
+def pdf_page_after_ocr(markdown: str, result: str | Exception) -> tuple[str, str, str | None]:
+    """A page's (Markdown, origin, notice) once OCR has run on it; `markdown` is the page's stored text."""
+    if isinstance(result, str) and result.strip():
+        return _clean(result), "ocr", None
+    if isinstance(result, Exception):
+        fallback = " Showing the text stored in the PDF instead." if markdown.strip() else ""
+        return markdown, "text", ocr_failure_notice(result) + fallback
+    return markdown, "text", None if markdown.strip() else "OCR found no text on this page."
+
+
+def pdf_without_text(notices: list[str]) -> ExtractionError:
+    """The error for a PDF with no text even after OCR, given its pages' notices."""
+    if get_settings().ocr_mode == "off":
+        return ExtractionError(
+            "No text found in this PDF. It's probably scanned images; set OCR_MODE=auto to read it with OCR."
         )
-
-    if not any(s.markdown.strip() for s in sections):
-        if settings.ocr_mode == "off":
-            raise ExtractionError("No text found in this PDF. It's probably scanned images; set OCR_MODE=auto to read it with OCR.")
-        failures = [r for r in results.values() if isinstance(r, Exception)]
-        if failures:
-            raise ExtractionError(f"No text found in this PDF. {ocr_failure_notice(failures[0])}")
-        raise ExtractionError("No text found in this PDF, even with OCR.")
-    return sections
+    failure = next((n for n in notices if n.startswith("OCR didn't work")), None)
+    return ExtractionError(f"No text found in this PDF. {failure}" if failure else "No text found in this PDF, even with OCR.")
 
 
 def _pdf_text_to_markdown(text: str) -> str:
@@ -268,8 +258,8 @@ def _strip_boilerplate(text: str, boilerplate: set[str]) -> str:
     return "\n".join(line for i, line in enumerate(lines) if i not in drop)
 
 
-def _pdf_figures(path: Path, progress: Progress) -> dict[int, list[Figure]]:
-    """Diagrams and pictures on each page (page number -> figures, top to bottom).
+def pdf_figures(path: Path, pages: range) -> dict[int, list[Figure]]:
+    """Diagrams and pictures on these pages (page number -> figures, top to bottom).
 
     They're cut out of the rendered page rather than extracted raw, so they look exactly as in the PDF.
     Diagrams drawn as vector shapes instead of embedded images aren't found.
@@ -284,10 +274,7 @@ def _pdf_figures(path: Path, progress: Progress) -> dict[int, list[Figure]]:
         logger.warning("Couldn't open %s to save its figures: %s", path.name, exc)
         return figures
     try:
-        total = len(pdf)
-        for number in range(1, total + 1):
-            if number % 20 == 0:
-                progress(f"Saving diagrams: page {number} of {total}")
+        for number in pages:
             try:
                 page = pdf[number - 1]
                 width, height = page.get_size()

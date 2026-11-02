@@ -12,7 +12,9 @@ import base64
 import io
 import json
 import logging
+import math
 import re
+import time
 from collections.abc import Callable
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from pathlib import Path
@@ -70,46 +72,58 @@ def render_pdf_page(path: Path, page_number: int) -> Image.Image:
 
 
 def ocr_pdf_pages(
-    path: Path, page_numbers: list[int], on_progress: Callable[[int, int], None]
-) -> dict[int, str | Exception]:
-    """OCR several PDF pages concurrently. Returns page number -> Markdown, or the error for that page."""
+    path: Path,
+    page_numbers: list[int],
+    on_page: Callable[[int, str | Exception], None],
+    stop_at: float = math.inf,
+    give_up_at: float = math.inf,
+) -> None:
+    """OCR several PDF pages concurrently, handing each result (Markdown, or the error for that page) to on_page
+    as it arrives. No page is started after stop_at, and pages still running at give_up_at are dropped
+    (times from time.monotonic), so processing in rounds can stop on time and do them in the next round.
+    At least one page is always done, so every round gets somewhere."""
     import pypdfium2 as pdfium
 
     settings = get_settings()
-    results: dict[int, str | Exception] = {}
+    queue = list(page_numbers)
     pending: dict[Future, int] = {}
+    finished = 0
 
     def collect(done: set[Future]) -> None:
+        nonlocal finished
         for future in done:
             page = pending.pop(future)
             try:
-                results[page] = future.result()
+                result = future.result()
             except FATAL_ERRORS:
                 raise
             except Exception as exc:
-                results[page] = exc
-            on_progress(len(results), len(page_numbers))
+                result = exc
+            on_page(page, result)
+            finished += 1
 
     pdf = pdfium.PdfDocument(str(path))
+    pool = ThreadPoolExecutor(max_workers=settings.ocr_concurrency)
     try:
-        with ThreadPoolExecutor(max_workers=settings.ocr_concurrency) as pool:
-            try:
-                for page in page_numbers:
-                    # pdfium isn't thread-safe, so pages are rendered here and only the API calls run in parallel.
-                    pending[pool.submit(image_to_markdown, _render(pdf, page))] = page
-                    if len(pending) >= settings.ocr_concurrency * 2:
-                        done, _ = wait(pending, return_when=FIRST_COMPLETED)
-                        collect(done)
-                while pending:
-                    done, _ = wait(pending, return_when=FIRST_COMPLETED)
-                    collect(done)
-            except BaseException:
-                for future in pending:
-                    future.cancel()
-                raise
+        while queue or pending:
+            while queue and len(pending) < settings.ocr_concurrency * 2 and (
+                time.monotonic() < stop_at or not (finished or pending)
+            ):
+                page = queue.pop(0)
+                # pdfium isn't thread-safe, so pages are rendered here and only the API calls run in parallel.
+                pending[pool.submit(image_to_markdown, _render(pdf, page))] = page
+            if not pending:
+                break  # out of time to start more
+            timeout = give_up_at - time.monotonic()
+            if timeout <= 0 and finished:
+                break
+            wait_for = None if math.isinf(timeout) or not finished else timeout
+            done, _ = wait(pending, timeout=wait_for, return_when=FIRST_COMPLETED)
+            collect(done)
     finally:
+        # Pages still running were given up on (or an error stopped everything): don't wait for them.
+        pool.shutdown(wait=not pending, cancel_futures=True)
         pdf.close()
-    return results
 
 
 def _render(pdf, page_number: int) -> Image.Image:

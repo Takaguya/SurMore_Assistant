@@ -116,6 +116,13 @@ CREATE INDEX IF NOT EXISTS idx_conversations_owner ON conversations(owner_id, up
 -- When processing last reported progress (see STALLED_AFTER).
 ALTER TABLE documents ADD COLUMN IF NOT EXISTS progress_at TIMESTAMPTZ NOT NULL DEFAULT now();
 
+-- Processing goes through stages and can stop and pick up again (see services/ingestion.py).
+ALTER TABLE documents ADD COLUMN IF NOT EXISTS stage TEXT;                 -- read | ocr | figures | index
+ALTER TABLE documents ADD COLUMN IF NOT EXISTS figures_through INTEGER NOT NULL DEFAULT 0;  -- PDF page
+ALTER TABLE documents ADD COLUMN IF NOT EXISTS round_until TIMESTAMPTZ;   -- a round is working on it until then
+ALTER TABLE documents ADD COLUMN IF NOT EXISTS rounds INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE sections ADD COLUMN IF NOT EXISTS ocr_pending BOOLEAN NOT NULL DEFAULT false;
+
 -- Keys the server generates for itself (see _media_key in core/auth.py), shared by every server process.
 CREATE TABLE IF NOT EXISTS app_secrets (
     name  TEXT PRIMARY KEY,
@@ -177,11 +184,13 @@ def init_db() -> None:
                 conn.execute(
                     "INSERT INTO schema_version (version) VALUES (%s) ON CONFLICT DO NOTHING", (SCHEMA_VERSION,)
                 )
-            conn.execute(
-                """UPDATE documents SET status = 'failed', progress = NULL, error = %s
-                   WHERE status = 'processing' AND progress_at < now() - %s::interval""",
-                (STALLED_ERROR, STALLED_AFTER),
-            )
+            # Processed in rounds, a document that isn't moving is waiting for its next round, not broken.
+            if not settings.processing_round_seconds:
+                conn.execute(
+                    """UPDATE documents SET status = 'failed', progress = NULL, error = %s
+                       WHERE status = 'processing' AND progress_at < now() - %s::interval""",
+                    (STALLED_ERROR, STALLED_AFTER),
+                )
     except psycopg.OperationalError as exc:
         raise RuntimeError(
             f"Couldn't connect to PostgreSQL at DATABASE_URL. Start the database "

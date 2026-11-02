@@ -70,6 +70,11 @@ class UploadDone(BaseModel):
     filename: Annotated[str, StringConstraints(min_length=1, max_length=255)]
 
 
+class ProcessingDocument(BaseModel):
+    id: str
+    busy: bool  # a round is working on it right now
+
+
 class Figure(BaseModel):
     """A diagram or picture from a section; the image is at /api/figures/{id}."""
 
@@ -153,3 +158,4 @@ class Health(BaseModel):
     ocr_mode: str
     max_upload_mb: int
     direct_uploads: bool  # files go from the browser straight to the bucket (STORAGE_BACKEND=s3)
+    processing_rounds: bool  # the browser runs processing in rounds (PROCESSING_ROUND_SECONDS)

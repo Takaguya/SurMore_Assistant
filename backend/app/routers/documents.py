@@ -12,6 +12,7 @@ from ..core.config import get_settings
 from ..schemas import (
     Document,
     Figure,
+    ProcessingDocument,
     RejectedFile,
     Section,
     SectionUpdate,
@@ -36,7 +37,8 @@ SELECT d.*,
        (SELECT count(*) FROM sections s WHERE s.document_id = d.id) AS section_count,
        (SELECT count(*) FROM sections s WHERE s.document_id = d.id AND s.origin = 'ocr') AS ocr_sections,
        (SELECT count(*) FROM sections s WHERE s.document_id = d.id AND s.edited) AS edited_sections,
-       d.status = 'processing' AND d.progress_at < now() - interval '{db.STALLED_AFTER}' AS stalled
+       d.status = 'processing' AND d.progress_at < now() - interval '{db.STALLED_AFTER}' AS stalled,
+       coalesce(d.round_until > now(), false) AS busy
 FROM documents d
 """
 
@@ -44,7 +46,9 @@ FROM documents d
 def _to_model(row: dict) -> Document:
     data = dict(row)
     data.pop("stored_path")
-    if data.pop("stalled"):
+    data.pop("busy")
+    # Processed in rounds, a document that isn't moving is waiting for the browser to start its next round.
+    if data.pop("stalled") and not get_settings().processing_round_seconds:
         data.update(status="failed", progress=None, error=db.STALLED_ERROR)
     data["needs_reindex"] = (
         data["status"] == "ready" and data["embedding_model"] != get_settings().nvidia_embedding_model
@@ -112,11 +116,11 @@ def upload_documents(
 
         with db.connect() as conn:
             conn.execute(
-                """INSERT INTO documents (id, kb_id, filename, file_type, size_bytes, stored_path, status, progress)
-                   VALUES (%s, %s, %s, %s, %s, %s, 'processing', 'Waiting to start')""",
+                """INSERT INTO documents (id, kb_id, filename, file_type, size_bytes, stored_path, status, progress, stage)
+                   VALUES (%s, %s, %s, %s, %s, %s, 'processing', 'Waiting to start', 'read')""",
                 (doc_id, kb_id, filename, file_type, size, stored_path),
             )
-        background.add_task(ingestion.process_document, doc_id)
+        _start_processing(background, doc_id)
         accepted.append(doc_id)
 
     with db.connect() as conn:
@@ -167,14 +171,14 @@ def finish_upload(
 
     with db.connect() as conn:
         added = conn.execute(
-            """INSERT INTO documents (id, kb_id, filename, file_type, size_bytes, stored_path, status, progress)
-               VALUES (%s, %s, %s, %s, %s, %s, 'processing', 'Waiting to start')
+            """INSERT INTO documents (id, kb_id, filename, file_type, size_bytes, stored_path, status, progress, stage)
+               VALUES (%s, %s, %s, %s, %s, %s, 'processing', 'Waiting to start', 'read')
                ON CONFLICT (id) DO NOTHING RETURNING id""",
             (document_id, kb_id, filename, detect_file_type(filename), size, stored_path),
         ).fetchone()
         row = _get_doc_or_404(conn, document_id, user)
     if added:  # not when the same upload is reported twice
-        background.add_task(ingestion.process_document, document_id)
+        _start_processing(background, document_id)
     return _to_model(row)
 
 
@@ -226,7 +230,7 @@ def reprocess_document(
     auto: reindex when the document already has sections, otherwise extract."""
     with db.connect() as conn:
         row = _get_doc_or_404(conn, document_id, user)
-        if row["status"] == "processing" and not row["stalled"]:
+        if row["status"] == "processing" and not (row["stalled"] and not row["busy"]):
             raise HTTPException(409, "This document is already being processed")
         if mode == "auto":
             mode = "reindex" if row["section_count"] else "extract"
@@ -234,12 +238,41 @@ def reprocess_document(
             raise HTTPException(400, "This document has no text to index yet. Read the file again instead.")
         conn.execute(
             """UPDATE documents SET status = 'processing', progress = 'Waiting to start', progress_at = now(),
-               error = NULL WHERE id = %s""",
-            (document_id,),
+               error = NULL, stage = %s, rounds = 0, round_until = NULL WHERE id = %s""",
+            ("read" if mode == "extract" else "index", document_id),
         )
         row = _get_doc_or_404(conn, document_id, user)
-    background.add_task(ingestion.process_document, document_id, mode)
+    _start_processing(background, document_id)
     return _to_model(row)
+
+
+def _start_processing(background: BackgroundTasks, document_id: str) -> None:
+    """Without a time limit, the whole job runs in the background now. On serverless hosts the browser runs it
+    in rounds instead (process_round), since work left running after a response can be cut off there."""
+    if not get_settings().processing_round_seconds:
+        background.add_task(ingestion.run_round, document_id)
+
+
+@router.get("/processing", response_model=list[ProcessingDocument])
+def list_processing(user: User = Depends(current_user)):
+    """The user's documents still being processed, for the browser to run their next rounds."""
+    with db.connect() as conn:
+        rows = conn.execute(
+            f"""SELECT d.id, coalesce(d.round_until > now(), false) AS busy FROM documents d
+                WHERE d.status = 'processing' AND {_OWNED} ORDER BY d.created_at""",
+            (user.id,),
+        ).fetchall()
+    return [ProcessingDocument(**r) for r in rows]
+
+
+@router.post("/documents/{document_id}/process", response_model=Document)
+def process_round(document_id: str, user: User = Depends(current_user)):
+    """One round of processing (PROCESSING_ROUND_SECONDS at most). Returns at once if a round is already running."""
+    with db.connect() as conn:
+        _get_doc_or_404(conn, document_id, user)
+    ingestion.run_round(document_id)
+    with db.connect() as conn:
+        return _to_model(_get_doc_or_404(conn, document_id, user))
 
 
 @router.delete("/documents/{document_id}", status_code=204)

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type DragEvent } from "react";
 import { ApiError, api } from "../api";
 import { useMediaToken } from "../auth";
+import { kickProcessing } from "../processing";
 import { ACCEPTED_EXTENSIONS, countSections, fileTypeLabel, formatBytes } from "../format";
 import type { DocumentInfo, KnowledgeBase, RejectedFile } from "../types";
 import { ChatIcon, OpenIcon, RetryIcon, TrashIcon, UploadIcon } from "./Icons";
@@ -100,6 +101,7 @@ export function KnowledgeBaseView({
     }
     if (fits.length) {
       // Also after an error: the files before it were uploaded.
+      kickProcessing();
       await load();
       onChanged();
     }
@@ -114,6 +116,7 @@ export function KnowledgeBaseView({
   async function retry(doc: DocumentInfo) {
     try {
       await api.reprocessDocument(doc.id, doc.needs_reindex ? "reindex" : "auto");
+      kickProcessing();
       await load();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
