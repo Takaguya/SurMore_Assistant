@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type DragEvent } from "react";
 import { api } from "../api";
+import { useMediaToken } from "../auth";
 import { ACCEPTED_EXTENSIONS, countSections, fileTypeLabel, formatBytes } from "../format";
 import type { DocumentInfo, KnowledgeBase, RejectedFile } from "../types";
 import { ChatIcon, OpenIcon, RetryIcon, TrashIcon, UploadIcon } from "./Icons";
@@ -223,6 +224,7 @@ function DocumentRow({
   onRetry: (d: DocumentInfo) => void;
   onRemove: (d: DocumentInfo) => void;
 }) {
+  const mediaToken = useMediaToken();
   const status =
     doc.status === "processing"
       ? (doc.progress ?? "Reading…")
@@ -261,7 +263,7 @@ function DocumentRow({
         )}
         <a
           className="icon-btn"
-          href={api.documentFileUrl(doc.id)}
+          href={api.documentFileUrl(doc.id, mediaToken)}
           target="_blank"
           rel="noreferrer"
           aria-label={`Open the original ${doc.filename}`}

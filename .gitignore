@@ -15,6 +15,9 @@ frontend/node_modules/
 frontend/dist/
 *.tsbuildinfo
 
+# Firebase deploy cache
+.firebase/
+
 # Local test documents
 Document_testing/
 

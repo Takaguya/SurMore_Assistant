@@ -6,7 +6,7 @@ import psycopg
 from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Response, UploadFile
 
 from ..core import db, limits
-from ..core.auth import User, current_user
+from ..core.auth import User, current_user, media_user
 from ..core.config import get_settings
 from ..schemas import Document, Figure, RejectedFile, Section, SectionUpdate, UploadResult
 from ..services import ingestion, nvidia
@@ -154,8 +154,15 @@ def delete_document(document_id: str, user: User = Depends(current_user)):
     return Response(status_code=204)
 
 
-@router.get("/documents/{document_id}/file")
-def get_document_file(document_id: str, user: User = Depends(current_user)):
+# --------------------------------------------------------------------------- original files and diagrams
+
+# Opened by <img> tags and plain links, which can't send an Authorization header, so these routes also accept
+# a media token in the URL (see media_user), and main.py includes them without the usual sign-in check.
+media_router = APIRouter(prefix="/api", tags=["documents"])
+
+
+@media_router.get("/documents/{document_id}/file")
+def get_document_file(document_id: str, user: User = Depends(media_user)):
     with db.connect() as conn:
         row = _get_doc_or_404(conn, document_id, user)
     media_type = mimetypes.guess_type(row["filename"])[0] or "application/octet-stream"
@@ -165,8 +172,8 @@ def get_document_file(document_id: str, user: User = Depends(current_user)):
         raise HTTPException(404, "The original file is missing from storage") from None
 
 
-@router.get("/figures/{figure_id}")
-def get_figure(figure_id: str, user: User = Depends(current_user)):
+@media_router.get("/figures/{figure_id}")
+def get_figure(figure_id: str, user: User = Depends(media_user)):
     """A diagram or picture cut out of a document (WebP)."""
     with db.connect() as conn:
         row = conn.execute(

@@ -1,6 +1,6 @@
 import { createContext, useContext, useEffect, useState, type FormEvent, type ReactNode } from "react";
 import type { Session, SupabaseClient } from "@supabase/supabase-js";
-import { initSupabase, loadPublicConfig, syncTokenCookie, UNAUTHORIZED_EVENT, type PublicConfig } from "../auth";
+import { initSupabase, loadPublicConfig, syncMediaToken, UNAUTHORIZED_EVENT, type PublicConfig } from "../auth";
 import "../auth.css";
 
 export interface Account {
@@ -38,10 +38,15 @@ export function AuthGate({ children }: { children: ReactNode }) {
         }
         const client = await initSupabase(config);
         const { data } = await client.auth.getSession();
-        syncTokenCookie(data.session);
+        await syncMediaToken(data.session);
         setState({ kind: "supabase", config, client, session: data.session });
+        let mediaTokenUser = data.session?.user.id;
         const { data: listener } = client.auth.onAuthStateChange((_event, session) => {
-          syncTokenCookie(session);
+          // Signing in, out or as someone else needs a new media token; otherwise it renews itself.
+          if (session?.user.id !== mediaTokenUser) {
+            mediaTokenUser = session?.user.id;
+            void syncMediaToken(session);
+          }
           setState((s) => (s.kind === "supabase" ? { ...s, session } : s));
         });
         unsubscribe = () => listener.subscription.unsubscribe();

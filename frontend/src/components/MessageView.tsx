@@ -2,6 +2,7 @@ import { memo, useMemo, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { api } from "../api";
+import { useMediaToken } from "../auth";
 import { fileTypeLabel, splitThinking } from "../format";
 import type { Message, Source } from "../types";
 import { FigureStrip, type FigureItem } from "./Figures";
@@ -212,6 +213,7 @@ function SourceItem({
   onToggle: () => void;
   onOpenSource: (source: Source) => void;
 }) {
+  const mediaToken = useMediaToken();
   return (
     <li id={id} className={`source${cited ? " source-cited" : ""}${open ? " source-open" : ""}`}>
       <button className="source-head" onClick={onToggle} aria-expanded={open}>
@@ -233,7 +235,7 @@ function SourceItem({
           )}
           <a
             className="source-open-link"
-            href={api.documentFileUrl(source.document_id, source.file_type, source.location)}
+            href={api.documentFileUrl(source.document_id, mediaToken, source.file_type, source.location)}
             target="_blank"
             rel="noreferrer"
           >

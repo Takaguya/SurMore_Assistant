@@ -111,6 +111,24 @@ ALTER TABLE knowledge_bases ADD COLUMN IF NOT EXISTS owner_id TEXT NOT NULL DEFA
 ALTER TABLE conversations ADD COLUMN IF NOT EXISTS owner_id TEXT NOT NULL DEFAULT 'local';
 CREATE INDEX IF NOT EXISTS idx_knowledge_bases_owner ON knowledge_bases(owner_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_conversations_owner ON conversations(owner_id, updated_at);
+
+-- Keys the server generates for itself (see _media_key in core/auth.py), shared by every server process.
+CREATE TABLE IF NOT EXISTS app_secrets (
+    name  TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+
+-- Supabase also serves every table in `public` through its Data API to anyone with the anon key, which the
+-- browser is given. Row level security with no policies shuts that door. The app connects as the tables'
+-- owner, which row level security doesn't apply to.
+ALTER TABLE knowledge_bases ENABLE ROW LEVEL SECURITY;
+ALTER TABLE documents ENABLE ROW LEVEL SECURITY;
+ALTER TABLE sections ENABLE ROW LEVEL SECURITY;
+ALTER TABLE chunks ENABLE ROW LEVEL SECURITY;
+ALTER TABLE figures ENABLE ROW LEVEL SECURITY;
+ALTER TABLE conversations ENABLE ROW LEVEL SECURITY;
+ALTER TABLE messages ENABLE ROW LEVEL SECURITY;
+ALTER TABLE app_secrets ENABLE ROW LEVEL SECURITY;
 """
 
 _pool: ConnectionPool | None = None

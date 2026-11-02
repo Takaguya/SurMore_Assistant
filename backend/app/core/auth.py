@@ -6,28 +6,35 @@ AUTH_MODE=supabase  visitors sign in with Supabase Auth (email link, Google...);
 """
 
 import asyncio
+import base64
 import hashlib
+import hmac
 import json
 import logging
+import secrets
 import threading
 import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
+from functools import lru_cache
 
 import jwt
 from fastapi import HTTPException, Request
 
+from . import db
 from .config import get_settings
 
 logger = logging.getLogger(__name__)
 
 LOCAL_USER_ID = "local"
-# Links that open an original file are plain <a href> navigations, which can't carry an Authorization
-# header, so the browser also keeps the token in this cookie. It is only accepted for GET requests.
-TOKEN_COOKIE = "surmore_token"
 ASYMMETRIC_ALGORITHMS = ["ES256", "RS256", "EdDSA"]
 CACHE_SECONDS = 300
+# <img> tags and file links can't send an Authorization header, and when the frontend is hosted apart from the
+# API no cookie reaches it either. So their URLs carry a media token instead: it only opens the user's own
+# diagrams and original files (see media_user) and runs out after an hour, so a URL that ends up in a log or
+# the browser history is of little use.
+MEDIA_TOKEN_SECONDS = 3600
 
 
 @dataclass(frozen=True)
@@ -56,8 +63,6 @@ def _token_from(request: Request) -> str | None:
     header = request.headers.get("authorization", "")
     if header.lower().startswith("bearer "):
         return header[7:].strip() or None
-    if request.method == "GET":
-        return request.cookies.get(TOKEN_COOKIE)
     return None
 
 
@@ -136,3 +141,48 @@ async def _verify_with_supabase(token: str) -> tuple[User, float]:
     data = await asyncio.to_thread(fetch)
     claims = jwt.decode(token, options={"verify_signature": False})
     return User(data["id"], data.get("email")), float(claims.get("exp", time.time() + 60))
+
+
+# --------------------------------------------------------------------------- media tokens
+
+
+def issue_media_token(user: User) -> str:
+    payload = f"{user.id}.{int(time.time()) + MEDIA_TOKEN_SECONDS}"
+    return f"{payload}.{_media_signature(payload)}"
+
+
+async def media_user(request: Request) -> User:
+    """FastAPI dependency for diagram and file downloads: the media token in ?token=, or a normal sign-in."""
+    token = request.query_params.get("token")
+    if token is None or get_settings().auth_mode == "none":
+        return await current_user(request)
+    return await asyncio.to_thread(_verify_media_token, token)
+
+
+def _verify_media_token(token: str) -> User:
+    payload, _, signature = token.rpartition(".")
+    user_id, _, expires = payload.rpartition(".")
+    if not (user_id and expires.isdecimal()) or not hmac.compare_digest(
+        signature.encode(), _media_signature(payload).encode()
+    ):
+        raise HTTPException(401, "This link isn't valid. Reload the page and try again.")
+    if int(expires) < time.time():
+        raise HTTPException(401, "This link has expired. Reload the page and try again.")
+    return User(user_id)
+
+
+def _media_signature(payload: str) -> str:
+    digest = hmac.new(_media_key(), payload.encode(), hashlib.sha256).digest()
+    return base64.urlsafe_b64encode(digest).rstrip(b"=").decode()
+
+
+@lru_cache
+def _media_key() -> bytes:
+    """Signs media tokens. It's kept in the database so every server process, or serverless instance, shares it."""
+    with db.connect() as conn:
+        conn.execute(
+            "INSERT INTO app_secrets (name, value) VALUES ('media_token_key', %s) ON CONFLICT (name) DO NOTHING",
+            (secrets.token_hex(32),),
+        )
+        row = conn.execute("SELECT value FROM app_secrets WHERE name = 'media_token_key'").fetchone()
+    return bytes.fromhex(row["value"])

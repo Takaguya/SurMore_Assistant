@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { api } from "../api";
+import { useMediaToken } from "../auth";
 import type { Figure } from "../types";
 
 export interface FigureItem {
@@ -17,6 +18,7 @@ export function FigureStrip({ items, label, caption }: { items: FigureItem[]; la
   const [open, setOpen] = useState<FigureItem | null>(null);
   // Figures that failed to load (e.g. the file was deleted) are hidden rather than shown as empty boxes.
   const [broken, setBroken] = useState<ReadonlySet<string>>(new Set());
+  const mediaToken = useMediaToken();
   const shown = items.filter((item) => !broken.has(item.figure.id));
   if (!shown.length) return null;
 
@@ -33,7 +35,7 @@ export function FigureStrip({ items, label, caption }: { items: FigureItem[]; la
               aria-label={`Enlarge the diagram from ${item.location}`}
             >
               <img
-                src={api.figureUrl(item.figure.id)}
+                src={api.figureUrl(item.figure.id, mediaToken)}
                 width={item.figure.width}
                 height={item.figure.height}
                 alt=""
@@ -53,7 +55,7 @@ export function FigureStrip({ items, label, caption }: { items: FigureItem[]; la
 
 function FigureViewer({ item, onClose }: { item: FigureItem; onClose: () => void }) {
   const ref = useRef<HTMLDialogElement>(null);
-  const url = api.figureUrl(item.figure.id);
+  const url = api.figureUrl(item.figure.id, useMediaToken());
 
   useEffect(() => {
     ref.current?.showModal();

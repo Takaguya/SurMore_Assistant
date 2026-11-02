@@ -9,7 +9,7 @@ from pydantic import BaseModel
 from starlette.datastructures import MutableHeaders
 
 from .core import db
-from .core.auth import User, current_user
+from .core.auth import MEDIA_TOKEN_SECONDS, User, current_user, issue_media_token
 from .core.config import get_settings
 from .routers import chat, documents, knowledge_bases
 from .schemas import Health
@@ -97,6 +97,8 @@ app.add_middleware(
 # Every data endpoint needs a signed-in user (or the "local" user when AUTH_MODE=none).
 for router in (knowledge_bases.router, documents.router, chat.router):
     app.include_router(router, dependencies=[Depends(current_user)])
+# Original files and diagrams check sign-in themselves, so they can also take a media token from the URL.
+app.include_router(documents.media_router)
 
 
 class PublicConfig(BaseModel):
@@ -125,6 +127,17 @@ def public_config():
 @app.get("/api/me", response_model=Me)
 def me(user: User = Depends(current_user)):
     return Me(id=user.id, email=user.email)
+
+
+class MediaToken(BaseModel):
+    token: str
+    expires_in: int
+
+
+@app.get("/api/media-token", response_model=MediaToken)
+def media_token(user: User = Depends(current_user)):
+    """A short-lived token for diagram and file URLs, which can't carry the Authorization header."""
+    return MediaToken(token=issue_media_token(user), expires_in=MEDIA_TOKEN_SECONDS)
 
 
 @app.get("/api/health", response_model=Health)

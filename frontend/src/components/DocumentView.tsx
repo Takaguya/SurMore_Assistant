@@ -2,6 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState, type Keyboar
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { api } from "../api";
+import { useMediaToken } from "../auth";
 import { countSections, fileTypeLabel } from "../format";
 import type { DocumentInfo, KnowledgeBase, Section } from "../types";
 import { FigureStrip } from "./Figures";
@@ -26,6 +27,7 @@ export function DocumentView({ documentId, kb, targetSectionId, onBack, onChange
   const [editingId, setEditingId] = useState<string | null>(null);
   const [ocrId, setOcrId] = useState<string | null>(null);
   const [sectionError, setSectionError] = useState<{ id: string; message: string } | null>(null);
+  const mediaToken = useMediaToken();
   const pendingScroll = useRef<string | null>(targetSectionId);
 
   const report = (err: unknown) => setError(err instanceof Error ? err.message : String(err));
@@ -150,7 +152,7 @@ export function DocumentView({ documentId, kb, targetSectionId, onBack, onChange
             searchable as soon as you save.
           </p>
           <div className="doc-header-actions">
-            <a className="btn" href={api.documentFileUrl(doc.id)} target="_blank" rel="noreferrer">
+            <a className="btn" href={api.documentFileUrl(doc.id, mediaToken)} target="_blank" rel="noreferrer">
               <OpenIcon width={16} height={16} /> Open original file
             </a>
             <button className="btn btn-quiet" onClick={() => reprocess("extract")} disabled={processing}>

@@ -9,10 +9,7 @@ import type {
   Source,
   UploadResult,
 } from "./types";
-import { getAccessToken, UNAUTHORIZED_EVENT } from "./auth";
-
-// Empty in development (Vite proxies /api). Set VITE_API_URL if the API lives on another host.
-const BASE = import.meta.env.VITE_API_URL ?? "";
+import { API_BASE as BASE, getAccessToken, UNAUTHORIZED_EVENT } from "./auth";
 
 export class ApiError extends Error {
   constructor(
@@ -56,6 +53,9 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
 const json = (method: string, body: unknown): RequestInit => ({ method, body: JSON.stringify(body) });
 
+/** Signs a diagram or file URL in with the media token (see useMediaToken); nothing when sign-in is off. */
+const withMediaToken = (mediaToken: string | null) => (mediaToken ? `?token=${encodeURIComponent(mediaToken)}` : "");
+
 export const api = {
   health: () => request<Health>("/api/health"),
 
@@ -77,13 +77,13 @@ export const api = {
   reprocessDocument: (id: string, mode: "auto" | "extract" | "reindex" = "auto") =>
     request<DocumentInfo>(`/api/documents/${id}/reprocess?mode=${mode}`, { method: "POST" }),
   deleteDocument: (id: string) => request<void>(`/api/documents/${id}`, { method: "DELETE" }),
-  documentFileUrl: (id: string, fileType?: string, location?: string | null) => {
+  documentFileUrl: (id: string, mediaToken: string | null, fileType?: string, location?: string | null) => {
     const page = fileType === "pdf" ? location?.match(/^Page (\d+)/)?.[1] : undefined;
-    return `${BASE}/api/documents/${id}/file${page ? `#page=${page}` : ""}`;
+    return `${BASE}/api/documents/${id}/file${withMediaToken(mediaToken)}${page ? `#page=${page}` : ""}`;
   },
 
-  /** Plain URL for <img src>; sign-in rides along in a cookie, which the API accepts for GET requests. */
-  figureUrl: (id: string) => `${BASE}/api/figures/${id}`,
+  /** Plain URL for <img src>, which can't send headers, so sign-in rides along as the media token. */
+  figureUrl: (id: string, mediaToken: string | null) => `${BASE}/api/figures/${id}${withMediaToken(mediaToken)}`,
 
   listSections: (documentId: string) => request<Section[]>(`/api/documents/${documentId}/sections`),
   updateSection: (id: string, markdown: string) => request<Section>(`/api/sections/${id}`, json("PUT", { markdown })),
